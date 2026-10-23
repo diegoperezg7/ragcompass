@@ -41,8 +41,8 @@ machine.
 | **Parser** per file type: text layer, OCR or vision model | Characters per page, page-wide images, figures per page |
 | **Chunking strategy, size and overlap** per content group (documents, tables, code) | The simulation below, section lengths, row lengths |
 | **Number of vectors and index size** at 384 / 768 / 1024 / 1536 / 3072 dims, float32 vs int8, HNSW graph | Simulated chunk counts, images, scanned pages |
-| **Embedding dimension, models and cost** | Language mix and tokens to embed, overlap included |
-| **Top-k, hybrid BM25, reranker** | Context budget, identifier density, corpus size, number of content types |
+| **Embedding dimension, models and cost** | Language mix and tokens to embed, overlap and image captions included |
+| **Top-k, hybrid BM25, reranker** | Context budget, largest chunk size, identifier density, index size |
 | **Metadata to store** | Pages, headings, sheets, languages, date density |
 
 The output is a terminal report, JSON, Markdown, and a `ragcompass.yaml` you can feed into your ingestion code
@@ -99,9 +99,10 @@ flowchart LR
 | Sentence cuts | one of its boundaries falls inside a sentence |
 | Table cuts | a boundary splits a table row, or it holds rows without their header |
 | Orphan headings | it ends on a heading, so the title is separated from its section |
+| Code cuts | a boundary falls mid-line, inside an indented block, between a decorator and its function, or after an open statement |
 | Tiny | it is smaller than a quarter of the target size |
 
-`damage = sentence cuts + 3 x table cuts + orphan headings + tiny`, all in % of chunks. Table cuts weigh triple because
+`damage = sentence cuts + 3 x table cuts + orphan headings + code cuts + tiny`, all in % of chunks. Table cuts weigh triple because
 a row without its column names is unreadable for both the retriever and the generator.
 
 On the sample corpus, fixed 256-token windows cut a sentence in 82% of chunks and split a table in 36%. Recursive
@@ -112,7 +113,7 @@ to zero.
 
 | Rule | Threshold | Why |
 |---|---|---|
-| Scanned page | < 25 characters of text and an image covering >= 50% of the page | There is no text layer to embed; OCR must run first. Scanned pages are not simulated, they are estimated at 450 tokens/page and reported as an estimate. |
+| Scanned page | Images cover >= 50% of the page (strips of a split scan are added up) and the text layer has < 25 characters or text boxes under 5% of the image area | There is no usable text layer; a stamp or page number printed on a scan does not make it searchable. Blank pages are ignored. Scanned pages are not simulated: they are estimated at 800 tokens/page (a dense A4 page of 500-600 words) and reported as an estimate. |
 | VLM for figures | >= 0.5 figures per page | Diagrams and charts carry content that text extraction drops. |
 | Structure-aware candidates | heading / page strategies compete only if >= 50% of the group's tokens have that structure | Otherwise they fall back to recursive splitting and the comparison is meaningless. |
 | Chunk size, structured text | Smallest of 256 / 512 / 1024 that fits the median section | Keeps most sections whole, so a chunk answers one question. |
@@ -120,12 +121,12 @@ to zero.
 | Chunk size, tables | Smallest size that fits the header plus 8 median rows | Enough rows for range questions without mixing far-apart records. |
 | Strategy | Lowest damage at the chosen size; ties prefer heading > row > page > recursive > fixed | Measured, not assumed; ties go to the strategy that preserves more structure. |
 | Overlap | 0 if no sentence cuts, 10% below 15% cuts, 20% above; always 0 for heading, page and row | Overlap only pays for itself when boundaries break sentences, and it costs extra tokens (reported). |
-| Hybrid BM25 | >= 3 codes or >= 25 identifiers per 1k tokens | Dense embeddings split SKUs and part numbers into sub-word pieces and match them poorly; BM25 matches them exactly. |
-| Embedding dimension | 1024 multilingual (bge-m3, multilingual-e5-large) if any second language holds >= 10% of tokens or the text is not English; otherwise 768 (nomic-embed-text, bge-base-en-v1.5) | Multilingual retrieval needs a multilingual model; English-only text gets strong recall at half the storage of 1536. |
-| Quantization | int8 when the float32 index plus HNSW graph exceeds 1 GiB | Below that, quantization trades recall for memory you do not need to save. |
+| Hybrid BM25 | >= 3 codes or >= 25 identifiers per 1k tokens | Dense embeddings split SKUs and part numbers into sub-word pieces and match them poorly; BM25 matches them exactly. 3 codes per 1k tokens is about one per 256-token chunk; 25 identifiers per 1k is one every ~40 tokens, typical of spec sheets and price lists. Quantities with units (220V, 10mm, M8x20), ordinals and names such as utf-8 are not counted as codes. Undecided when there is no text. |
+| Embedding dimension | Undecided when no language can be detected (for example, a corpus of scans): decide after OCR. Otherwise 1024 multilingual (bge-m3, multilingual-e5-large) if any second language holds >= 10% of tokens or the text is not English; otherwise 768 (nomic-embed-text, bge-base-en-v1.5) | Multilingual retrieval needs a multilingual model; English-only text gets strong recall at half the storage of 1536. |
+| Quantization | int8 when the float32 index plus HNSW graph exceeds 1 GiB | 1 GiB fits a small instance; above it memory drives the cost and int8 cuts vectors 4x for a small recall loss. Below it, quantization trades recall for memory you do not need to save. |
 | Index size | `vectors x dim x 4` (float32), `x 1` (int8), plus `vectors x 2M x 4` bytes of HNSW links with M = 16 | Plain arithmetic, shown for every common dimension. |
-| Top-k | `3000 / chunk size`, clamped to 3..10 | Fills a 3,000-token context budget without overflowing it. |
-| Reranker | >= 1,000 vectors or more than one content type; then retrieve 4 x top-k candidates | Dense top-k gets noisy as the index grows, and prose, tables and code score on different scales. |
+| Top-k | `3000 // largest chunk size` across groups, at most 10 and never more than the vectors in the index | Fills a 3,000-token context budget without overflowing it, whichever group the chunks come from. |
+| Reranker | >= 10,000 vectors; then retrieve 4 x top-k candidates (capped at the index size) | Below that a top-k is a meaningful slice of the index; above it the first page of dense results fills with near-miss neighbours, which a cross-encoder reorders. Each candidate costs one model call, so it is not recommended by default on small indexes. |
 | Metadata | `source`, `chunk_index` always; `page`, `heading_path`, `sheet`, `row_range`, `language`, `dates`, `doc_kind` when the corpus has them | Citations, neighbour expansion and filters need these at query time; they cannot be recovered later. |
 
 ## Quickstart

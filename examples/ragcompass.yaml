@@ -34,13 +34,13 @@ embedding:
   - bge-m3
   - multilingual-e5-large
   quantization: float32
-  vectors: 28
-  index_bytes: 118272
+  vectors: 30
+  index_bytes: 126720
 retrieval:
-  top_k: 10
-  candidates: 40
+  top_k: 5
+  candidates: 5
   hybrid_bm25: true
-  reranker: bge-reranker-v2-m3
+  reranker: null
 metadata:
 - source
 - chunk_index

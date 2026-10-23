@@ -10,9 +10,12 @@ from pathlib import Path
 from ragcompass.ingest.text import LIST_ITEM, table_block
 from ragcompass.models import Block, BlockType, DocKind
 
-# A page with less text than this and an image covering most of it is a scan.
-SCANNED_MAX_CHARS = 25
+# A page is a scan when images cover at least half of it and its text layer is negligible:
+# fewer than 25 characters, or text boxes smaller than 5% of the image area (a stamp, a page
+# number or a footer printed on top of the scan does not make the page searchable).
 SCANNED_MIN_COVERAGE = 0.5
+SCANNED_MAX_CHARS = 25
+SCANNED_MAX_TEXT_SHARE = 0.05
 HEADING_MAX_CHARS = 120
 HEADING_SIZE_FACTOR = 1.15
 BULLET = re.compile(r"^\s*(?:[•\-–*]|\d+[.)])\s+")
@@ -59,7 +62,7 @@ def extract(path: Path):
     document = pymupdf.open(path)
     pages: list[tuple[int, list[tuple[float, float, Block | dict]]]] = []
     size_weights: Counter[float] = Counter()
-    scanned = 0
+    scanned = blank = 0
     images = 0
 
     for number, page in enumerate(document, start=1):
@@ -68,10 +71,17 @@ def extract(path: Path):
         raw = page.get_text("dict")["blocks"]
         text_blocks = [b for b in raw if b.get("type") == 0]
         chars = sum(len(s["text"].strip()) for b in text_blocks for ln in b["lines"] for s in ln["spans"])
-        coverage = max((abs(box) / page_area for box in boxes), default=0.0)
-        if chars < SCANNED_MAX_CHARS and coverage >= SCANNED_MIN_COVERAGE:
-            scanned += 1
-            images += len(boxes) - 1  # the scan itself is not a figure
+        if not chars and not boxes:
+            blank += 1  # says nothing about whether the document is a scan
+            pages.append((number, []))
+            continue
+        # Scanners sometimes split a page into strips, so image areas are added up.
+        image_area = min(sum(abs(box) for box in boxes), page_area)
+        text_area = sum(abs(pymupdf.Rect(b["bbox"]) & page.rect) for b in text_blocks)
+        if image_area / page_area >= SCANNED_MIN_COVERAGE and (
+            chars < SCANNED_MAX_CHARS or text_area < SCANNED_MAX_TEXT_SHARE * image_area
+        ):
+            scanned += 1  # the images are the page itself, not figures
             pages.append((number, []))
             continue
         images += len(boxes)
@@ -121,7 +131,7 @@ def extract(path: Path):
 
     page_count = document.page_count
     document.close()
-    if page_count and scanned == page_count:
+    if scanned and scanned == page_count - blank:
         kind = DocKind.PDF_SCANNED
     elif scanned:
         kind = DocKind.PDF_MIXED

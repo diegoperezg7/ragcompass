@@ -37,23 +37,34 @@ CODE_SIZE = 512  # fits a typical function with its signature and docstring
 ROWS_PER_TABLE_CHUNK = 8  # enough rows to answer range questions without mixing far records
 OVERLAP_LOW_CUTS = 15.0  # % of sentence cuts below which 10% overlap is enough
 
-# Hybrid search: dense embeddings split codes like "SKU-4471-B" into sub-word pieces
-# and match them poorly; BM25 matches them exactly.
+# Hybrid search: dense embeddings split codes like "SKU-4471-B" into sub-word pieces and
+# match them poorly; BM25 matches them exactly.
+# 3 codes per 1k tokens is about one per 256-token chunk: lookups by code become routine.
 HYBRID_CODES_PER_1K = 3.0
+# 25 identifiers (codes, dates, numbers) per 1k tokens is one every ~40 tokens: spec sheets,
+# price lists and tables, where users quote exact values.
 HYBRID_IDS_PER_1K = 25.0
+# 2 dates per 1k tokens: dates appear in most chunks, so a date field is worth extracting.
 DATE_FIELD_PER_1K = 2.0
 
 # Retrieval
 CONTEXT_BUDGET = 3000  # tokens of retrieved context handed to the generator
-MIN_TOP_K, MAX_TOP_K = 3, 10
-RERANK_MIN_VECTORS = 1000  # below this, a dense top-k is usually already precise
+MAX_TOP_K = 10  # beyond this, long-context models start to ignore the middle of the context
+# Below ~10k vectors a dense (or hybrid) top-k is a meaningful slice of the index; above it,
+# the first page of results fills with near-miss neighbours and cross-encoder reranking is the
+# standard fix. Reranking costs one model call per candidate, so it is not free on small indexes.
+RERANK_MIN_VECTORS = 10_000
 RERANK_CANDIDATES = 4  # retrieve this many times top-k for the reranker
 
 # Index
 HNSW_M = 16  # neighbours per node; layer-0 links are 2*M ids of 4 bytes each
-INT8_THRESHOLD_BYTES = 1 << 30  # quantize once the float32 index passes 1 GiB
+# 1 GiB fits in the memory of a small instance; past it, memory drives the cost of the index
+# and int8 scalar quantization cuts vectors 4x for a small recall loss (recoverable by rescoring).
+INT8_THRESHOLD_BYTES = 1 << 30
 DIMENSIONS = (384, 768, 1024, 1536, 3072)
-SCANNED_PAGE_TOKENS = 450  # typical OCR yield of a dense A4 page, used only for scans
+# A dense A4 page holds 500-600 words, about 750-800 tokens; used only to estimate scans.
+SCANNED_PAGE_TOKENS = 800
+CAPTION_TOKENS = 100  # a VLM caption of 60-80 words, embedded once per image
 
 EMBEDDING_PRICES = {  # USD per million tokens, reference list prices
     "local (Ollama: nomic-embed-text, bge-m3)": 0.0,
@@ -284,10 +295,12 @@ def recommend(profiles: list[DocProfile], docs: list[Doc], sims: list[Simulation
     doc_size = chosen["documents"].size if "documents" in chosen else DEFAULT_PROSE_SIZE
     scan_vectors = scanned * math.ceil(SCANNED_PAGE_TOKENS / doc_size)
     vectors = simulated + images + scan_vectors
-    embedded_tokens = sum(r.total_tokens for r in chosen.values()) + scanned * SCANNED_PAGE_TOKENS
+    embedded_tokens = (
+        sum(r.total_tokens for r in chosen.values()) + scanned * SCANNED_PAGE_TOKENS + images * CAPTION_TOKENS
+    )
     parts = [f"{simulated} chunks measured by the simulation"]
     if images:
-        parts.append(f"{images} image captions")
+        parts.append(f"{n(images, 'image caption')} (~{CAPTION_TOKENS} tokens each)")
     if scan_vectors:
         parts.append(
             f"~{scan_vectors} estimated for {n(scanned, 'scanned page')} at {SCANNED_PAGE_TOKENS} tokens/page after OCR"
@@ -304,7 +317,14 @@ def recommend(profiles: list[DocProfile], docs: list[Doc], sims: list[Simulation
     # Embedding dimension and quantization.
     multilingual = sum(1 for t in languages.values() if text_tokens and t / text_tokens >= 0.1) > 1
     main_language = next(iter(languages), None)
-    if multilingual or (main_language and main_language != "en"):
+    corpus_tokens = sum(p.tokens for p in usable)
+    if not languages:
+        dimension, models = None, []
+        dim_reason = (
+            f"insufficient evidence: no language could be detected in {corpus_tokens:,} tokens of text; "
+            "decide after OCR."
+        )
+    elif multilingual or main_language != "en":
         dimension, models = 1024, ["bge-m3", "multilingual-e5-large"]
         mix = ", ".join(f"{lang} {round(100 * t / text_tokens)}%" for lang, t in languages.items())
         dim_reason = f"text is not English-only ({mix}); multilingual models at 1024 dims handle it."
@@ -323,9 +343,12 @@ def recommend(profiles: list[DocProfile], docs: list[Doc], sims: list[Simulation
                 hnsw_overhead_bytes=vectors * HNSW_M * 2 * 4,
             )
         )
-    chosen_index = next(i for i in plan.index if i.dimension == dimension)
-    float32_total = chosen_index.float32_bytes + chosen_index.hnsw_overhead_bytes
-    if float32_total > INT8_THRESHOLD_BYTES:
+    chosen_index = next((i for i in plan.index if i.dimension == dimension), None)
+    float32_total = chosen_index.float32_bytes + chosen_index.hnsw_overhead_bytes if chosen_index else None
+    if chosen_index is None:
+        quantization = None
+        q_reason = "insufficient evidence: the dimension is not decided yet; decide after OCR."
+    elif float32_total > INT8_THRESHOLD_BYTES:
         quantization = "int8"
         q_reason = f"float32 index at {dimension} dims is {human_bytes(float32_total)}; int8 cuts vectors 4x."
     else:
@@ -356,7 +379,10 @@ def recommend(profiles: list[DocProfile], docs: list[Doc], sims: list[Simulation
 
     # Retrieval.
     hybrid = density[1] >= HYBRID_CODES_PER_1K or density[0] >= HYBRID_IDS_PER_1K
-    if hybrid:
+    if not corpus_tokens:
+        hybrid = None
+        h_reason = "insufficient evidence: there is no text to measure identifiers in; decide after OCR."
+    elif hybrid:
         h_reason = (
             f"{density[1]} codes and {density[0]} identifiers per 1k tokens: exact tokens like SKUs "
             "and dates are matched far better by BM25 than by dense vectors."
@@ -365,25 +391,29 @@ def recommend(profiles: list[DocProfile], docs: list[Doc], sims: list[Simulation
         h_reason = f"only {density[1]} codes and {density[0]} identifiers per 1k tokens; dense retrieval alone is enough."
     plan.add("retrieval.hybrid_bm25", hybrid, h_reason, ids_per_1k=density[0], codes_per_1k=density[1])
 
-    top_k = max(MIN_TOP_K, min(MAX_TOP_K, round(CONTEXT_BUDGET / doc_size)))
-    rerank = vectors >= RERANK_MIN_VECTORS or len(groups) > 1
-    candidates = top_k * RERANK_CANDIDATES if rerank else top_k
+    # Size top-k for the largest chunks any group produces, so the budget holds whatever is retrieved.
+    largest = max((r.size for r in chosen.values()), default=DEFAULT_PROSE_SIZE)
+    top_k = max(1, min(MAX_TOP_K, CONTEXT_BUDGET // largest, vectors or 1))
+    rerank = vectors >= RERANK_MIN_VECTORS
+    candidates = min(top_k * RERANK_CANDIDATES, vectors) if rerank else top_k
+    k_reason = f"a {CONTEXT_BUDGET:,}-token context budget over chunks of up to {largest} tokens fits {top_k}"
+    if top_k == vectors:
+        k_reason += ", which is every vector in the index"
     plan.add(
         "retrieval.top_k",
         {"candidates": candidates, "final": top_k},
-        f"a {CONTEXT_BUDGET}-token context budget over {doc_size}-token chunks gives {top_k} chunks"
-        + (f"; retrieve {candidates} so the reranker has room to reorder." if rerank else "."),
+        k_reason + (f"; retrieve {candidates} so the reranker has room to reorder." if rerank else "."),
+        largest_chunk=largest,
     )
     if rerank:
-        why = []
-        if vectors >= RERANK_MIN_VECTORS:
-            why.append(f"{vectors} vectors is past the {RERANK_MIN_VECTORS} where dense top-k gets noisy")
-        if len(groups) > 1:
-            why.append(f"{len(groups)} content types ({', '.join(groups)}) score on different scales")
-        r_reason = "; ".join(why) + ". A cross-encoder puts them on one relevance scale."
+        r_reason = (
+            f"{vectors:,} vectors is past {RERANK_MIN_VECTORS:,}: the first page of dense results fills with "
+            f"near-miss neighbours, and a cross-encoder over {candidates} candidates restores precision."
+        )
     else:
         r_reason = (
-            f"{vectors} vectors of one content type; dense top-{top_k} is precise enough without a reranker."
+            f"{vectors:,} vectors is below {RERANK_MIN_VECTORS:,}: a top-{top_k} from the index is precise "
+            "enough, and a reranker would add one model call per candidate. Add one if evaluation shows misses."
         )
     plan.add("retrieval.reranker", "bge-reranker-v2-m3" if rerank else False, r_reason)
 
@@ -415,7 +445,9 @@ def recommend(profiles: list[DocProfile], docs: list[Doc], sims: list[Simulation
             "models": models,
             "quantization": quantization,
             "vectors": vectors,
-            "index_bytes": float32_total
+            "index_bytes": None
+            if chosen_index is None
+            else float32_total
             if quantization == "float32"
             else chosen_index.int8_bytes + chosen_index.hnsw_overhead_bytes,
         },

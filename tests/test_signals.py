@@ -29,3 +29,32 @@ def test_language_detection():
     assert detect_language(english) == "en"
     assert detect_language(spanish) == "es"
     assert detect_language("too short to tell") is None
+
+
+TECHNICAL_MANUAL = (
+    "Connect the 220V supply at 50Hz and fix the bracket with M8x20 bolts on a 10mm plate. "
+    "Use a 2.5mm hex key, 3x20 fuses and 1kV leads. Logs are written as utf-8 and kept in "
+    "ISO-8859-1 for the legacy viewer. During covid-19 the lab on the 21st floor moved to the 3rd. "
+    "Order fan HX-FAN-118, relay RLY-4471-B and battery CR2032 for unit HX20481736."
+)
+
+
+def test_units_and_names_are_not_codes():
+    ids = count_identifiers(TECHNICAL_MANUAL, tokens=100)
+    # only the four part numbers are identifiers worth an exact-match index
+    assert ids.codes == 4
+
+
+def test_catalan_is_not_spanish():
+    catalan = (
+        "La política de devolucions explica com es tramiten les reparacions dels instruments i "
+        "quins terminis s'apliquen a cada cas. El client pot retornar el producte amb tots els "
+        "accessoris i amb el certificat de calibratge per a la seva revisió."
+    )
+    spanish = (
+        "La política de devoluciones explica cómo se tramitan las reparaciones de los instrumentos y "
+        "qué plazos se aplican a cada caso. El cliente puede devolver el producto con todos los "
+        "accesorios y con el certificado de calibración para su revisión."
+    )
+    assert detect_language(catalan) == "ca"
+    assert detect_language(spanish) == "es"

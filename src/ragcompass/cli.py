@@ -36,7 +36,11 @@ def analyze(
     ] = False,
 ) -> None:
     """Profile documents, simulate chunking and recommend a RAG configuration."""
-    report = run_analysis(path, tokenizer=get_tokenizer(tokenizer) if tokenizer else None)
+    try:
+        active = get_tokenizer(tokenizer)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--tokenizer") from exc
+    report = run_analysis(path, tokenizer=active)
     if llm_summary:
         from ragcompass.llm import summarize
 

@@ -415,6 +415,10 @@ h3 {
   gap: 4px 10px;
 }
 
+.undecided {
+  color: var(--warn);
+}
+
 .value-detail {
   font-size: 13px;
   font-weight: 500;

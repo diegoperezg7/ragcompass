@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from ragcompass.ingest.tabular import CellBudget
 from ragcompass.ingest.text import table_block
 from ragcompass.models import Block, BlockType, DocKind
 
@@ -19,6 +20,7 @@ def extract(path: Path):
     from ragcompass.ingest import Extracted
 
     document = docx.Document(str(path))
+    budget = CellBudget()
     blocks: list[Block] = []
     for element in document.element.body.iterchildren():
         tag = element.tag.rsplit("}", 1)[-1]
@@ -38,8 +40,13 @@ def extract(path: Path):
                 blocks.append(Block(type=BlockType.PARAGRAPH, text=text))
         elif tag == "tbl":
             table = Table(element, document)
-            rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
+            rows = []
+            for row in table.rows:
+                cells = row.cells
+                if not budget.take(len(cells)):
+                    break
+                rows.append([cell.text.strip() for cell in cells])
             if rows:
                 blocks.append(table_block(rows))
     images = len(document.element.body.xpath(".//a:blip"))
-    return Extracted(kind=DocKind.DOCX, blocks=blocks, images=images)
+    return Extracted(kind=DocKind.DOCX, blocks=blocks, images=images, warnings=budget.warning())

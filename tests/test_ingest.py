@@ -95,3 +95,104 @@ def test_broken_file_is_reported_not_raised(tmp_path):
     broken = tmp_path / "broken.pdf"
     broken.write_bytes(b"not a pdf")
     assert extract(broken).error
+
+
+def test_text_encodings(tmp_path):
+    from ragcompass.ingest import read_text
+
+    text = "Café, déjà vu, 5 €"
+    cases = {
+        "utf8.txt": text.encode("utf-8"),
+        "bom.txt": b"\xef\xbb\xbf" + text.encode("utf-8"),
+        "utf16.txt": text.encode("utf-16"),  # Python writes the BOM
+        "cp1252.txt": text.encode("cp1252"),
+    }
+    for name, data in cases.items():
+        (tmp_path / name).write_bytes(data)
+        assert read_text(tmp_path / name) == text, name
+
+
+def test_data_files_are_text_not_code(tmp_path):
+    (tmp_path / "settings.yaml").write_text("# comment\nkey: value\n\n- item\n")
+    extracted = extract(tmp_path / "settings.yaml")
+    assert extracted.kind == DocKind.TEXT
+    assert {b.type for b in extracted.blocks} == {BlockType.PARAGRAPH}  # no headings or lists
+
+
+def test_own_outputs_are_skipped(tmp_path):
+    from ragcompass.analyze import analyze
+    from ragcompass.ingest import iter_files
+    from ragcompass.report import to_json, to_markdown, to_yaml
+    from ragcompass.tokens import RegexTokenizer
+
+    (tmp_path / "notes.md").write_text("# Notes\n\nSome text about the calibrator.\n")
+    report = analyze(tmp_path, tokenizer=RegexTokenizer())
+    (tmp_path / "any-name.yaml").write_text(to_yaml(report))
+    (tmp_path / "report.md").write_text(to_markdown(report))
+    (tmp_path / "report.json").write_text(to_json(report))
+    assert [p.name for p in iter_files(tmp_path)] == ["notes.md"]
+
+
+def test_table_cell_budget(tmp_path, monkeypatch, tokenizer):
+    from openpyxl import Workbook
+
+    from ragcompass.ingest import tabular
+
+    workbook = Workbook()
+    for i in range(50):
+        workbook.active.append([f"r{i}", i, i * 2])
+    workbook.save(tmp_path / "big.xlsx")
+    monkeypatch.setattr(tabular, "MAX_TABLE_CELLS", 30)  # 10 rows of 3 cells
+    extracted = extract(tmp_path / "big.xlsx")
+    assert extracted.blocks[1].rows is not None and len(extracted.blocks[1].rows) == 10
+    assert extracted.warnings == ["truncated after 30 table cells"]
+
+
+def _scan_pdf(path, pages):
+    """Build a PDF from page specs: lists of ("image", rect fractions) or ("text", str, y)."""
+    import pymupdf
+
+    document = pymupdf.open()
+    for spec in pages:
+        page = document.new_page(width=595, height=842)
+        for item in spec:
+            if item[0] == "image":
+                x0, y0, x1, y1 = item[1]
+                pix = pymupdf.Pixmap(pymupdf.csGRAY, pymupdf.IRect(0, 0, 60, 80), False)
+                pix.clear_with(200)
+                page.insert_image(
+                    pymupdf.Rect(x0 * 595, y0 * 842, x1 * 595, y1 * 842), pixmap=pix, keep_proportion=False
+                )
+            else:
+                page.insert_text((40, item[2]), item[1], fontsize=9)
+    document.save(path)
+
+
+FULL = ("image", (0, 0, 1, 1))
+
+
+def test_blank_page_does_not_turn_a_scan_into_mixed(tmp_path):
+    _scan_pdf(tmp_path / "scan.pdf", [[FULL], []])
+    extracted = extract(tmp_path / "scan.pdf")
+    assert (extracted.kind, extracted.scanned_pages) == (DocKind.PDF_SCANNED, 1)
+
+
+def test_stamp_on_a_scan_still_needs_ocr(tmp_path):
+    _scan_pdf(tmp_path / "scan.pdf", [[FULL, ("text", "APPROVED 2025-11-04 QA-DEPT / page 1 of 1", 820)]])
+    assert extract(tmp_path / "scan.pdf").kind == DocKind.PDF_SCANNED
+
+
+def test_scan_split_into_strips(tmp_path):
+    strips = [("image", (0, 0, 1, 0.34)), ("image", (0, 0.34, 1, 0.67)), ("image", (0, 0.67, 1, 1))]
+    _scan_pdf(tmp_path / "scan.pdf", [strips])
+    assert extract(tmp_path / "scan.pdf").kind == DocKind.PDF_SCANNED
+
+
+def test_text_page_with_large_figure_is_not_a_scan(tmp_path):
+    lines = [
+        ("text", "Body text of a manual page with enough words to be a real paragraph.", 600 + 12 * i)
+        for i in range(18)
+    ]
+    _scan_pdf(tmp_path / "doc.pdf", [[("image", (0, 0, 1, 0.6)), *lines]])
+    extracted = extract(tmp_path / "doc.pdf")
+    assert (extracted.kind, extracted.images) == (DocKind.PDF_TEXT, 1)

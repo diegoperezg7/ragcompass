@@ -9,6 +9,8 @@ from ragcompass.models import Identifiers
 _STOPWORDS = {
     "en": "the and of to in is that for it with as was on are be by this not or from at which an have",
     "es": "de la que el en y los del se las por un para con no una su al es lo como más pero sus",
+    # Catalan shares many words with Spanish; its distinctive ones (i, amb, per, els, és) decide.
+    "ca": "de la el i que a en per les els del un una amb no és al com dels més però seu també aquest",
     "fr": "de la le et les des en un du une que est pour qui dans par sur pas au avec ce plus",
     "de": "der die und in den von zu das mit sich des auf für ist im dem nicht ein eine als auch",
     "pt": "de que o a do da em um para é com não uma os no se na por mais as dos como",
@@ -31,6 +33,19 @@ DATE = re.compile(
 )
 # A code mixes letters and digits, is at least four characters long and may use - _ / . inside.
 CODE = re.compile(r"(?<![\w-])(?=[\w./-]*\d)(?=[\w./-]*[A-Za-z])[A-Za-z0-9](?:[\w./-]*[A-Za-z0-9])?(?![\w-])")
+# Tokens that look like codes but are quantities, ordinals or well-known names, not identifiers
+# you would look up: 220V, 2.5mm, 50Hz, M8x20, 10x20, 21st, utf-8, covid-19, sha256, x86.
+UNIT = (
+    r"(?:[kmµunGM]?(?:v|a|w|wh|hz|ohm|Ω|f|h|s|ms|min|g|kg|mg|t|m|mm|cm|km|l|ml|b|kb|mb|gb|tb|bit|bps|"
+    r"px|pt|dpi|ppi|rpm|nm|bar|pa|kpa|°c|°f|c|k|x|db|mah|ah|in|ft|lb|oz|%))"
+)
+NOT_A_CODE = re.compile(
+    rf"^(?:\d+(?:[.,]\d+)?{UNIT}"  # quantity with a unit
+    r"|m\d+(?:x\d+)?|\d+x\d+(?:x\d+)?"  # thread and size specs
+    r"|\d+(?:st|nd|rd|th|º|ª)"  # ordinals
+    r"|utf-?\d+|iso-?\d+(?:-\d+)*|covid-?19|sha-?\d+|md5|ipv[46]|mp[34]|x86|x64|arm64|base64|h\.?26[45]|[1-9]d)$",
+    re.IGNORECASE,
+)
 NUMBER = re.compile(r"(?<![\w.,])[-+]?\d+(?:[.,]\d+)*%?(?![\w])")
 
 
@@ -52,7 +67,12 @@ def detect_language(text: str) -> str | None:
 def count_identifiers(text: str, tokens: int) -> Identifiers:
     dates = DATE.findall(text)
     remaining = DATE.sub(" ", text)
-    codes = [m.group(0) for m in CODE.finditer(remaining) if len(m.group(0)) >= 4]
+    codes = []
+    for match in CODE.finditer(remaining):
+        token = match.group(0)
+        if len(token) >= 4 and not NOT_A_CODE.match(token):
+            codes.append(token)
+    # Quantities such as 220V are neither codes nor bare numbers; drop every code-shaped token.
     remaining = CODE.sub(" ", remaining)
     numbers = NUMBER.findall(remaining)
     total = len(dates) + len(codes) + len(numbers)

@@ -104,7 +104,7 @@ def measure(
 ) -> SimulationResult:
     sizes: list[int] = []
     source_tokens = 0
-    sentence_cuts = table_cuts = orphans = 0
+    sentence_cuts = table_cuts = orphans = code_cuts = 0
     for doc in docs:
         layout = doc.layout
         source_tokens += len(layout.tokens)
@@ -116,6 +116,7 @@ def measure(
                 chunk.start, chunk.end, chunk.extra_tokens
             )
             orphans += layout.ends_with_heading(chunk.start, chunk.end)
+            code_cuts += "code" in kinds
     n = len(sizes)
     pct = lambda x: round(100 * x / n, 1) if n else 0.0  # noqa: E731
     total = sum(sizes)
@@ -126,6 +127,7 @@ def measure(
         pct(orphans),
         pct(tiny),
     )
+    code_pct = pct(code_cuts)
     return SimulationResult(
         group=group,
         strategy=strategy,
@@ -144,8 +146,9 @@ def measure(
         sentence_cut_pct=sentence_pct,
         table_cut_pct=table_pct,
         orphan_heading_pct=orphan_pct,
+        code_cut_pct=code_pct,
         tiny_pct=tiny_pct,
-        damage=round(sentence_pct + TABLE_CUT_WEIGHT * table_pct + orphan_pct + tiny_pct, 1),
+        damage=round(sentence_pct + TABLE_CUT_WEIGHT * table_pct + orphan_pct + code_pct + tiny_pct, 1),
     )
 
 

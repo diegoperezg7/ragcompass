@@ -74,8 +74,9 @@ def test_quantization_switches_to_int8(tmp_path, monkeypatch):
 def test_top_k_follows_context_budget(tmp_path):
     write(tmp_path, "notes.txt", PROSE * 20)
     report = analyze(tmp_path, tokenizer=RegexTokenizer())
-    # 3000-token budget / 512-token chunks = 5.86 -> 6
-    assert rec(report, "retrieval.top_k").value == {"candidates": 6, "final": 6}
+    # 3000-token budget // 512-token chunks = 5; never more than the index holds
+    vectors = rec(report, "vectors").value
+    assert rec(report, "retrieval.top_k").value == {"candidates": min(5, vectors), "final": min(5, vectors)}
 
 
 def test_overlap_rule(tmp_path):
@@ -93,4 +94,43 @@ def test_scanned_pages_are_estimated_not_simulated():
     report = analyze(CORPUS / "scanned-invoice.pdf", tokenizer=RegexTokenizer())
     vectors = rec(report, "vectors")
     assert vectors.evidence["simulated"] == 0
-    assert vectors.evidence["scanned_estimate"] == 1  # 450 tokens fit one 512-token chunk
+    assert vectors.evidence["scanned_estimate"] == 2  # 800 tokens need two 512-token chunks
+
+
+def test_top_k_never_exceeds_the_index(tmp_path):
+    write(tmp_path, "note.md", "# Note\n\nOne short paragraph.\n")
+    report = analyze(tmp_path, tokenizer=RegexTokenizer())
+    assert rec(report, "vectors").value == 1
+    assert rec(report, "retrieval.top_k").value == {"candidates": 1, "final": 1}
+
+
+def test_top_k_sized_for_the_largest_group():
+    report = analyze(CORPUS, tokenizer=RegexTokenizer())
+    largest = max(r.value["size"] for r in report.recommendations if r.key.startswith("chunking."))
+    top_k = rec(report, "retrieval.top_k").value["final"]
+    assert top_k == 3000 // largest
+    assert top_k * largest <= 3000
+
+
+def test_reranker_follows_index_size(tmp_path, monkeypatch):
+    write(tmp_path, "notes.txt", PROSE * 40)
+    report = analyze(tmp_path, tokenizer=RegexTokenizer())
+    assert rec(report, "retrieval.reranker").value is False
+    monkeypatch.setattr(rules, "RERANK_MIN_VECTORS", 1)
+    report = analyze(tmp_path, tokenizer=RegexTokenizer())
+    top_k = rec(report, "retrieval.top_k").value
+    assert rec(report, "retrieval.reranker").value
+    assert top_k["candidates"] <= rec(report, "vectors").value
+
+
+def test_no_text_means_insufficient_evidence():
+    report = analyze(CORPUS / "scanned-invoice.pdf", tokenizer=RegexTokenizer())
+    for key in ("embedding.dimension", "embedding.quantization", "retrieval.hybrid_bm25"):
+        assert rec(report, key).value is None
+        assert "insufficient evidence" in rec(report, key).reason
+        assert "after OCR" in rec(report, key).reason
+
+
+def test_caption_tokens_count_in_cost():
+    report = analyze(CORPUS / "wiring-diagram.png", tokenizer=RegexTokenizer())
+    assert report.costs[0].tokens == rules.CAPTION_TOKENS

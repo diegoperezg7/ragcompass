@@ -34,4 +34,5 @@ def build_profile(path: str, size_bytes: int, extracted: Extracted, layout: Layo
         image_text_ratio=round(extracted.images * 1000 / tokens, 2) if tokens else 0.0,
         identifiers=count_identifiers(layout.text, tokens),
         error=extracted.error,
+        warnings=extracted.warnings,
     )

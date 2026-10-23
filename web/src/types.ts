@@ -39,6 +39,7 @@ export interface SimulationResult {
   sentence_cut_pct: number;
   table_cut_pct: number;
   orphan_heading_pct: number;
+  code_cut_pct: number;
   tiny_pct: number;
   damage: number;
 }

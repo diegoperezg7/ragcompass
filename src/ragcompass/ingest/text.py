@@ -68,6 +68,12 @@ def parse_markdown(source: str) -> list[Block]:
     return blocks
 
 
+def parse_plain(source: str) -> list[Block]:
+    """Paragraphs separated by blank lines, with no markup interpreted."""
+    parts = [part.strip() for part in re.split(r"\n\s*\n", source)]
+    return [Block(type=BlockType.PARAGRAPH, text=part) for part in parts if part]
+
+
 def extract_code(path: Path):
     from ragcompass.ingest import Extracted, read_text
 

@@ -15,6 +15,31 @@ from ragcompass.tokens import TokenIndex, Tokenizer
 SEPARATOR = "\n\n"
 SENTENCE_END = ".!?…"
 CLOSERS = "\"')]»”’"
+OPENERS = (":", "{", "(", "[", ",", "\\", "=", "+", "&&", "||")
+DEFINITIONS = ("def ", "async def ", "class ", "function ", "export ", "@", "fn ", "func ")
+CONTINUATIONS = (")", "]", "}", "else", "elif", "except", "finally", "catch")
+
+
+def _line_before(text: str, start: int, position: int) -> str | None:
+    """Last non-blank line in ``text[start:position]``."""
+    end = position - 1
+    while end > start:
+        line_start = max(text.rfind("\n", start, end) + 1, start)
+        if text[line_start:end].strip():
+            return text[line_start:end]
+        end = line_start - 1
+    return None
+
+
+def _line_after(text: str, position: int, end: int) -> str | None:
+    """First non-blank line in ``text[position:end]``."""
+    while position < end:
+        line_end = text.find("\n", position, end)
+        line_end = end if line_end == -1 else line_end
+        if text[position:line_end].strip():
+            return text[position:line_end]
+        position = line_end + 1
+    return None
 
 
 @dataclass(frozen=True)
@@ -76,8 +101,26 @@ class Layout:
             return span
         return None
 
+    def _code_boundary(self, span: Span, position: int) -> str:
+        """A code boundary is clean only between top-level statements or definitions."""
+        text = self.text
+        if text[position - 1] != "\n":
+            return "code"  # in the middle of a line
+        previous = _line_before(text, span.start, position)
+        following = _line_after(text, position, span.end)
+        if previous is None or following is None:
+            return "clean"
+        if previous.lstrip().startswith("@") or previous.rstrip().endswith(OPENERS):
+            return "code"  # decorator or open statement continues below
+        stripped = following.lstrip()
+        if stripped.startswith(DEFINITIONS):
+            return "clean"  # a new function or class, possibly a method
+        if following[0].isspace() or stripped.startswith(CONTINUATIONS):
+            return "code"  # inside an indented block or a multi-line construct
+        return "clean"
+
     def boundary(self, position: int) -> str:
-        """Classify a chunk boundary: ``clean``, ``sentence`` or ``table_row``."""
+        """Classify a chunk boundary: ``clean``, ``sentence``, ``table_row`` or ``code``."""
         span = self.block_at(position)
         if span is None:
             return "clean"
@@ -86,7 +129,7 @@ class Layout:
         if block.type == BlockType.TABLE:
             return "clean" if text[position - 1] == "\n" or text[position] == "\n" else "table_row"
         if block.type == BlockType.CODE:
-            return "clean"
+            return self._code_boundary(span, position)
         before = text[span.start : position].rstrip()
         if not before:
             return "clean"

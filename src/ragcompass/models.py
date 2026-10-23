@@ -68,6 +68,7 @@ class DocProfile(BaseModel):
     image_text_ratio: float = 0.0  # images per 1,000 tokens of text
     identifiers: Identifiers = Field(default_factory=Identifiers)
     error: str | None = None
+    warnings: list[str] = Field(default_factory=list)
 
 
 class SizeStats(BaseModel):
@@ -90,8 +91,9 @@ class SimulationResult(BaseModel):
     sentence_cut_pct: float  # chunks with a boundary in the middle of a sentence
     table_cut_pct: float  # chunks that split a table row or hold rows without their header
     orphan_heading_pct: float  # chunks that end on a heading, separated from its section
+    code_cut_pct: float  # chunks with a boundary inside a function, block or statement
     tiny_pct: float  # chunks below a quarter of the target size
-    damage: float  # sentence_cut_pct + 3 * table_cut_pct + orphan_heading_pct + tiny_pct
+    damage: float  # sentence + 3 * table + orphan heading + code cuts + tiny, all in %
 
 
 class Recommendation(BaseModel):
@@ -128,6 +130,7 @@ class CorpusSummary(BaseModel):
 
 
 class Report(BaseModel):
+    generator: str = "ragcompass"  # first key of the JSON output; marks it as ours when re-scanned
     version: str
     summary: CorpusSummary
     documents: list[DocProfile]

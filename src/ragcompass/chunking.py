@@ -11,7 +11,19 @@ from ragcompass.layout import Layout
 from ragcompass.models import BlockType
 
 PROSE_SEPARATORS = ["\n\n", "\n", ". ", " "]
-CODE_SEPARATORS = ["\nclass ", "\ndef ", "\nfunction ", "\n\n", "\n", " "]
+# Definition separators split *before* the keyword, so a chunk starts with "def" or "class".
+CODE_SEPARATORS = [
+    "\nclass ",
+    "\nasync def ",
+    "\ndef ",
+    "\nfunction ",
+    "\nexport ",
+    "\n    async def ",
+    "\n    def ",
+    "\n\n",
+    "\n",
+    " ",
+]
 
 
 @dataclass(frozen=True)
@@ -47,17 +59,30 @@ def _fixed_span(layout: Layout, start: int, end: int, size: int) -> list[tuple[i
 
 
 def _pieces(text: str, start: int, end: int, separator: str) -> list[tuple[int, int]]:
+    """Split ``text[start:end]`` at every ``separator``.
+
+    Whitespace separators stay at the end of the piece before them. A separator with a
+    keyword (``"\ndef "``) starts the next piece instead, together with any decorator lines
+    right above it.
+    """
+    before = separator.startswith("\n") and bool(separator.strip())
     pieces = []
-    position = start
-    while True:
-        found = text.find(separator, position, end)
-        if found == -1:
-            break
-        cut = found + len(separator)
-        pieces.append((position, cut))
-        position = cut
-    if position < end:
-        pieces.append((position, end))
+    piece_start = search = start
+    while (found := text.find(separator, search, end)) != -1:
+        if before:
+            search = cut = found + 1
+            while True:  # keep "@decorator" lines with the definition they decorate
+                line_start = text.rfind("\n", piece_start, cut - 1) + 1
+                if line_start <= piece_start or not text[line_start : cut - 1].lstrip().startswith("@"):
+                    break
+                cut = line_start
+        else:
+            search = cut = found + len(separator)
+        if cut > piece_start:
+            pieces.append((piece_start, cut))
+            piece_start = cut
+    if piece_start < end:
+        pieces.append((piece_start, end))
     return pieces
 
 

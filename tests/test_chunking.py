@@ -92,3 +92,70 @@ def test_boundary_classification(layout):
     table_start = doc.spans[1].start
     assert doc.boundary(table_start + len("| a | b |\n")) == "clean"
     assert doc.boundary(table_start + 3) == "table_row"
+
+
+CODE_SOURCE = '''import math
+
+
+@cache
+def area(radius):
+    """Area of a circle."""
+    value = math.pi * radius ** 2
+    return round(value, 2)
+
+
+def perimeter(radius):
+    """Perimeter of a circle."""
+    value = 2 * math.pi * radius
+    return round(value, 2)
+
+
+class Circle:
+    def __init__(self, radius):
+        self.radius = radius
+
+    def area(self):
+        return area(self.radius)
+'''
+
+
+def code_layout(layout):
+    return layout((BlockType.CODE, CODE_SOURCE))
+
+
+def test_code_splits_before_definitions(layout):
+    doc = code_layout(layout)
+    chunks = chunking.recursive(doc, size=40, separators=chunking.CODE_SEPARATORS)  # a function is ~36 tokens
+    starts = [doc.text[c.start : c.end].lstrip().split("\n", 1)[0] for c in chunks]
+    assert starts == ["import math", "def perimeter(radius):", "class Circle:"]
+    assert any("@cache\ndef area" in t for t in texts(doc, chunks))  # decorator kept with its function
+    assert all(t.strip() not in ("def", "class") for t in texts(doc, chunks))
+    assert all(doc.boundary(c.start) == "clean" for c in chunks)
+
+
+def test_code_boundary_classification(layout):
+    doc = code_layout(layout)
+    text = doc.text
+    assert doc.boundary(text.index("def perimeter")) == "clean"
+    assert doc.boundary(text.index("def area")) == "code"  # between decorator and def
+    assert doc.boundary(text.index("    value = 2")) == "code"  # inside a function body
+    assert doc.boundary(text.index("math.pi * radius ** 2")) == "code"  # mid-line
+    assert doc.boundary(text.index("    def area(self)")) == "clean"  # between methods
+
+
+def test_fixed_windows_cut_code(layout):
+    from ragcompass.models import DocKind
+    from ragcompass.simulate import Doc, measure
+
+    doc = Doc(kind=DocKind.CODE, layout=code_layout(layout))
+    fixed = measure("code", "fixed", 40, 0, [doc], lambda d: chunking.fixed(d.layout, 40))
+    split = measure(
+        "code",
+        "recursive",
+        40,
+        0,
+        [doc],
+        lambda d: chunking.recursive(d.layout, 40, separators=chunking.CODE_SEPARATORS),
+    )
+    assert fixed.code_cut_pct > 50
+    assert split.code_cut_pct == 0

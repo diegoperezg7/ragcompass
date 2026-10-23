@@ -40,6 +40,7 @@ function useFormatValue() {
   const t = useT();
   return (rec: Recommendation): ReactNode => {
     const v = rec.value as Record<string, number | string> | unknown;
+    if (v === null || v === undefined) return <span className="undecided">{t.undecided}</span>;
     if (rec.key.startsWith("chunking.")) {
       const c = v as { strategy: string; size: number; overlap: number };
       return (
@@ -73,7 +74,7 @@ function useFormatValue() {
       return (
         <>
           {String(v)}
-          <span className="value-detail">{(rec.evidence.models as string[]).join(", ")}</span>
+          <span className="value-detail">{((rec.evidence.models as string[]) ?? []).join(", ")}</span>
         </>
       );
     }
@@ -179,6 +180,7 @@ function Simulation({ report }: { report: ReportData }) {
               <th className="num">{t.sentence}</th>
               <th className="num">{t.table}</th>
               <th className="num">{t.orphan}</th>
+              <th className="num">{t.code}</th>
               <th className="num">{t.tiny}</th>
               <th className="damage-col">{t.damage}</th>
             </tr>
@@ -197,6 +199,7 @@ function Simulation({ report }: { report: ReportData }) {
                 <td className="num">{r.sentence_cut_pct}%</td>
                 <td className="num">{r.table_cut_pct}%</td>
                 <td className="num">{r.orphan_heading_pct}%</td>
+                <td className="num">{r.code_cut_pct}%</td>
                 <td className="num">{r.tiny_pct}%</td>
                 <td className="damage-col">
                   <div className="damage">

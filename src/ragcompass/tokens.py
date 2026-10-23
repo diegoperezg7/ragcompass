@@ -61,9 +61,14 @@ def get_tokenizer(name: str | None = None) -> Tokenizer:
     name = name or os.environ.get("RAGCOMPASS_TOKENIZER", "cl100k_base")
     if name in ("regex", RegexTokenizer.name):
         return RegexTokenizer()
+    import tiktoken
+
+    if name not in tiktoken.list_encoding_names():
+        choices = ", ".join(sorted(tiktoken.list_encoding_names()) + ["regex"])
+        raise ValueError(f"unknown tokenizer {name!r}; choose one of: {choices}")
     try:
         return TiktokenTokenizer(name)
-    except Exception:  # encoding files not cached and no network
+    except Exception:  # a valid encoding whose files are not cached and cannot be downloaded
         return RegexTokenizer()
 
 
