@@ -18,7 +18,10 @@ from ragcompass.report import to_markdown, to_yaml
 
 MAX_UPLOAD_BYTES = int(os.environ.get("RAGCOMPASS_MAX_UPLOAD_MB", "50")) * 1024 * 1024
 MAX_FILES = 500
-WEB_DIST = Path(os.environ.get("RAGCOMPASS_WEB_DIST", Path(__file__).resolve().parents[2] / "web" / "dist"))
+REPO = Path(__file__).resolve().parents[2]
+WEB_DIST = Path(os.environ.get("RAGCOMPASS_WEB_DIST", REPO / "web" / "dist"))
+SAMPLE_DIR = Path(os.environ.get("RAGCOMPASS_SAMPLE_DIR", REPO / "examples" / "corpus"))
+Format = Literal["json", "md", "yaml"]
 
 app = FastAPI(title="ragcompass", version=__version__)
 
@@ -39,7 +42,7 @@ def health() -> dict[str, str]:
 @app.post("/api/analyze", response_model=None)
 async def analyze_upload(
     files: Annotated[list[UploadFile], File(description="Files; folder uploads keep relative paths.")],
-    format: Annotated[Literal["json", "md", "yaml"], Query()] = "json",
+    format: Annotated[Format, Query()] = "json",
     llm_summary: Annotated[bool, Query()] = False,
 ) -> Report | PlainTextResponse:
     if not files:
@@ -62,6 +65,26 @@ async def analyze_upload(
         source = entries[0] if len(entries) == 1 and entries[0].is_dir() else root
         label = source.name if source != root else "upload"
         report = analyze(source, label=label)
+    return respond(report, format, llm_summary)
+
+
+@app.post("/api/sample", response_model=None)
+def analyze_sample(
+    format: Annotated[Format, Query()] = "json", llm_summary: Annotated[bool, Query()] = False
+) -> Report | PlainTextResponse:
+    """Analyse the bundled sample corpus."""
+    if not SAMPLE_DIR.is_dir():
+        raise HTTPException(404, "sample corpus not available")
+    return respond(analyze(SAMPLE_DIR, label="sample-corpus"), format, llm_summary)
+
+
+@app.post("/api/render")
+def render_report(report: Report, format: Annotated[Literal["md", "yaml"], Query()]) -> PlainTextResponse:
+    """Turn a report the client already has into Markdown or YAML for download."""
+    return respond(report, format, False)
+
+
+def respond(report: Report, format: str, llm_summary: bool) -> Report | PlainTextResponse:
     if llm_summary:
         from ragcompass.llm import summarize
 

@@ -62,3 +62,10 @@ def test_cli_table_output():
     result = CliRunner().invoke(cli, ["analyze", str(CORPUS)])
     assert result.exit_code == 0, result.output
     assert "Recommendations" in result.stdout
+
+
+def test_sample_and_render_roundtrip():
+    report = client.post("/api/sample").json()
+    assert report["summary"]["files"] == 9
+    rendered = client.post("/api/render?format=yaml", json=report)
+    assert yaml.safe_load(rendered.text)["chunking"]["tables"]["strategy"] == "row"
