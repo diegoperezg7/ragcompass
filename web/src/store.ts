@@ -26,7 +26,7 @@ interface State {
   view: View;
   explore: ChunkQuery | null;
   exportOpen: boolean;
-  bench: { data: Bench; preview: boolean } | null;
+  bench: Bench | null;
   benchState: "idle" | "running" | "error";
   benchError: string | null;
   runBench: () => Promise<void>;
@@ -81,7 +81,7 @@ const loaded = (report: Report) => ({
   status: "done" as const,
   view: "report" as const,
   explore: null,
-  bench: report.bench ? { data: report.bench, preview: false } : null,
+  bench: report.bench ?? null,
   benchState: "idle" as const,
 });
 
@@ -106,7 +106,7 @@ export const useStore = create<State>((set, get) => ({
     try {
       const bench = await runBench(report, get().lang);
       if (get().report !== report) return;
-      const updated = bench.preview ? report : await fetchReport(report, get().lang).catch(() => report);
+      const updated = await fetchReport(report, get().lang).catch(() => report);
       set({ bench, benchState: "idle", report: updated });
     } catch (error) {
       if ((error as ApiError).expired) return get().expire();

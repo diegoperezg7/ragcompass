@@ -2,7 +2,7 @@ import { Binary, Blocks, ChevronDown, Layers, ScanSearch, ScanText, Search, Tags
 import { useState, type ReactNode } from "react";
 import { keyLabel } from "../i18n";
 import { bytes, num } from "../lib/format";
-import { groupOf, isMeasured } from "../lib/report";
+import { groupOf } from "../lib/report";
 import { useStore, useT } from "../store";
 import type { Recommendation, Report } from "../types";
 import { BasisBadge, Panel } from "./ui";
@@ -77,7 +77,7 @@ function Card({ r, report }: { r: Recommendation; report: Report }) {
   const reason = useReason();
   const openExplorer = useStore((s) => s.openExplorer);
   const [open, setOpen] = useState(false);
-  const basis = r.basis ?? (isMeasured(r.key) ? "measured" : "rule-based");
+  const basis = r.basis ?? "rule-based";
   const evidence = Object.entries(r.evidence ?? {});
   const id = `rec-${r.key.replace(/\W/g, "-")}`;
   const chunk = r.key.startsWith("chunking.") ? (r.value as { strategy: string; size: number; overlap: number } | null) : null;

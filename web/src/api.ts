@@ -1,5 +1,4 @@
-import { mockBench, mockExport, mockProjection } from "./mocks";
-import type { Bench, ChunkView, ExportTarget, Loaded, Projection, Report } from "./types";
+import type { Bench, ChunkView, ExportTarget, Projection, Report } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -85,47 +84,19 @@ export async function fetchChunks(report: Report, query: ChunkQuery, signal?: Ab
   return (await call(`${reportUrl(report, "/chunks")}?${params}`, { signal })).json();
 }
 
-// Endpoints whose contract is fixed but which the server may not implement yet: a missing
-// route (404 "Not Found", 405) falls back to typed placeholder data marked as preview.
-async function orPreview<T>(request: () => Promise<Response>, parse: (r: Response) => Promise<T>, fallback: () => T): Promise<Loaded<T>> {
-  try {
-    return { data: await parse(await request()), preview: false };
-  } catch (error) {
-    const missing = error instanceof ApiError && ((error.status === 404 && !error.expired) || error.status === 405);
-    if (!missing) throw error;
-    return { data: fallback(), preview: true };
-  }
-}
-
 /** Stored report, refreshed after a benchmark so recommendations carry their measured basis. */
 export async function fetchReport(report: Report, lang: string): Promise<Report> {
   return (await call(`${reportUrl(report)}?lang=${lang}`)).json();
 }
 
-export function runBench(report: Report, lang: string, dense = import.meta.env.VITE_BENCH_DENSE !== "false"): Promise<Loaded<Bench>> {
-  return orPreview(
-    () => call(`${reportUrl(report, "/bench")}?lang=${lang}&dense=${dense}`, { method: "POST" }),
-    (r) => r.json(),
-    () => mockBench(report),
-  );
+export async function runBench(report: Report, lang: string, dense = import.meta.env.VITE_BENCH_DENSE !== "false"): Promise<Bench> {
+  return (await call(`${reportUrl(report, "/bench")}?lang=${lang}&dense=${dense}`, { method: "POST" })).json();
 }
 
-export function fetchProjection(report: Report): Promise<Loaded<Projection>> {
-  return orPreview(
-    () => call(reportUrl(report, "/projection")),
-    (r) => r.json(),
-    () => mockProjection(report),
-  );
+export async function fetchProjection(report: Report): Promise<Projection> {
+  return (await call(reportUrl(report, "/projection"))).json();
 }
 
-export async function fetchExport(report: Report, target: ExportTarget, lang: string): Promise<Loaded<string>> {
-  try {
-    return { data: await (await call(`${reportUrl(report, "/export")}?target=${target}&lang=${lang}`)).text(), preview: false };
-  } catch (error) {
-    const missing = error instanceof ApiError && ((error.status === 404 && !error.expired) || error.status === 405);
-    if (!missing) throw error;
-    // YAML already has a live endpoint; the framework snippets are placeholders until /export exists.
-    if (target === "yaml") return { data: await renderReport(report, "yaml", lang), preview: false };
-    return { data: mockExport(report, target), preview: true };
-  }
+export async function fetchExport(report: Report, target: ExportTarget): Promise<string> {
+  return (await call(`${reportUrl(report, "/export")}?target=${target}`)).text();
 }

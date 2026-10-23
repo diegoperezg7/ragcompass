@@ -22,9 +22,6 @@ export function isPick(sim: SimulationResult, pick: ChunkPick | undefined): bool
   return Boolean(pick) && sim.strategy === pick!.strategy && sim.size === pick!.size && sim.overlap === pick!.overlap;
 }
 
-/** Recommendations picked by running the chunkers on the corpus, as opposed to a rule over its profile. */
-export const isMeasured = (key: string) => key.startsWith("chunking.") || key === "vectors";
-
 export interface HealthPart {
   id: "integrity" | "extractable" | "parsed";
   score: number;

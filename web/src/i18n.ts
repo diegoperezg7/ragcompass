@@ -238,9 +238,8 @@ const en = {
   exportHint: "The recommended setup as a config file or a snippet for your framework.",
   copy: "Copy",
   copied: "Copied",
+  fullReport: "Full report:",
   download: "Download",
-  preview: "preview data",
-  previewHint: "The server does not provide this yet; showing example data in the final shape.",
 };
 
 type Dict = typeof en;
@@ -483,9 +482,8 @@ const es: Dict = {
   exportHint: "La configuración recomendada como fichero o como fragmento para tu framework.",
   copy: "Copiar",
   copied: "Copiado",
+  fullReport: "Informe completo:",
   download: "Descargar",
-  preview: "datos de ejemplo",
-  previewHint: "El servidor aún no lo ofrece; se muestran datos de ejemplo con la forma definitiva.",
 };
 
 export const dictionaries: Record<Lang, Dict> = { en, es };

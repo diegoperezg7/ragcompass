@@ -399,12 +399,6 @@ pre,
   color: var(--ok);
 }
 
-.badge.preview {
-  border-style: dashed;
-  border-color: color-mix(in srgb, var(--warn) 55%, transparent);
-  background: var(--warn-soft);
-  color: var(--warn);
-}
 
 .swatch {
   display: inline-block;
@@ -2883,6 +2877,14 @@ input[type="range"]:disabled {
 
 .spacer {
   flex: 1;
+}
+
+.dialog-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  font-size: 13px;
 }
 
 .code {

@@ -64,21 +64,70 @@ languages.
 
 ## Web app
 
-Upload files or a whole folder (drag and drop keeps the folder structure), read the report, download the YAML.
-Light and dark themes, English and Spanish.
+Opens straight into the tool: drop files or a whole folder (the folder structure is kept) or analyse the sample corpus.
+Light and dark themes, English and Spanish, usable on a phone.
+
+**Report.** Pipeline status, a corpus health score with its breakdown, KPIs, a treemap of the corpus by tokens and
+the recommendations, each with its basis (rule-based or measured), its reason and the evidence behind it.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/web-report-dark.png">
-    <img src="docs/assets/web-report-light.png" alt="Report view of the web app" width="900">
+    <img src="docs/assets/web-report-light.png" alt="Report dashboard: pipeline, corpus health, KPIs and corpus map" width="900">
+  </picture>
+</p>
+
+**Chunking simulation.** Damage of every strategy, size and overlap as a heatmap (select a cell to open it in the
+explorer), damage by strategy and size, and the chunk size distribution of the recommended configuration.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/web-heatmap-dark.png">
+    <img src="docs/assets/web-heatmap-light.png" alt="Strategy by size by overlap heatmap, damage chart and chunk size histogram" width="900">
+  </picture>
+</p>
+
+**Chunk explorer.** Re-chunks a file as you move the size and overlap sliders, marks every boundary on a minimap with
+damaged cuts in red, explains each cut and compares two strategies side by side (`j`/`k` to move, `n` for the next
+issue).
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/web-explorer-dark.png">
+    <img src="docs/assets/web-explorer-light.png" alt="Chunk explorer comparing heading and fixed-size chunking side by side" width="900">
+  </picture>
+</p>
+
+**Benchmark.** Recall@k, MRR and nDCG with 95% bootstrap intervals per configuration and retriever, recall by k,
+latency, the winner and whether its margin is significant, plus the lexical overlap of the generated queries as a
+quality check.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/web-bench-dark.png">
+    <img src="docs/assets/web-bench-light.png" alt="Retrieval benchmark with confidence intervals, recall curve and latency" width="900">
+  </picture>
+</p>
+
+**Embedding map and export.** Chunks projected to 2D with a benchmark query and its nearest chunks; the
+recommended setup as `ragcompass.yaml` or ready-to-paste LangChain, LlamaIndex and Haystack code.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/web-projection-dark.png">
+    <img src="docs/assets/web-projection-light.png" alt="2D projection of chunk embeddings with a query and its neighbours" width="900">
   </picture>
 </p>
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/web-simulation-dark.png">
-    <img src="docs/assets/web-simulation-light.png" alt="Chunking simulation table" width="900">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/web-export-dark.png">
+    <img src="docs/assets/web-export-light.png" alt="Export dialog with the LangChain snippet" width="900">
   </picture>
+</p>
+
+<p align="center">
+  <img src="docs/assets/web-mobile.png" alt="Report on a phone" width="300">
 </p>
 
 ## Pipeline

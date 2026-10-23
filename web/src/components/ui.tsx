@@ -67,15 +67,6 @@ export function BasisBadge({ basis }: { basis: "measured" | "rule-based" }) {
   );
 }
 
-export function PreviewBadge() {
-  const t = useT();
-  return (
-    <span className="badge preview" title={t.previewHint}>
-      {t.preview}
-    </span>
-  );
-}
-
 export function Skeleton({ h = 16, w = "100%", r = 6 }: { h?: number; w?: number | string; r?: number }) {
   return <span className="skeleton" style={{ height: h, width: w, borderRadius: r }} aria-hidden />;
 }

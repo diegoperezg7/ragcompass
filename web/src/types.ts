@@ -200,9 +200,3 @@ export interface Projection {
 }
 
 export type ExportTarget = "yaml" | "langchain" | "llamaindex" | "haystack";
-
-/** Data plus whether it is placeholder data because the endpoint is not live yet. */
-export interface Loaded<T> {
-  data: T;
-  preview: boolean;
-}

@@ -48,7 +48,7 @@ export function Pipeline({ report }: { report: Report }) {
   const totalBytes = report.documents.reduce((sum, d) => sum + d.size_bytes, 0);
   const strategies = new Set(report.simulations.map((x) => x.strategy)).size;
   const settings = report.recommendations.filter((r) => !r.key.startsWith("parser.")).length;
-  const best = bench?.data.configs.find((c) => c.label === bench.data.winner.label);
+  const best = bench?.configs.find((c) => c.label === bench.winner.label);
   return (
     <ol className="pipeline" aria-label={t.pipeline}>
       <Step
@@ -83,7 +83,7 @@ export function Pipeline({ report }: { report: Report }) {
         icon={<FlaskConical size={15} />}
         label={t.steps.bench}
         value={best ? `nDCG ${best.ndcg.mean.toFixed(2)}` : benchState === "running" ? t.running : t.notRun}
-        detail={bench ? `${bench.data.configs.length} ${t.configsLower} · ${bench.data.queries} ${t.queriesLower}` : t.benchStepHint}
+        detail={bench ? `${bench.configs.length} ${t.configsLower} · ${bench.queries} ${t.queriesLower}` : t.benchStepHint}
         state={bench ? "done" : benchState === "running" ? "running" : "todo"}
         action={
           !bench && benchState !== "running" ? (

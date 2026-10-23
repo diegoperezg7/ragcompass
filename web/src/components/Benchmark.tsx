@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useWidth } from "../lib/useWidth";
 import { useStore, useT } from "../store";
 import type { Bench, BenchConfig, Interval } from "../types";
-import { Empty, Panel, PreviewBadge, Segmented, Skeleton, TipRows, useTipProps } from "./ui";
+import { Empty, Panel, Segmented, Skeleton, TipRows, useTipProps } from "./ui";
 
 const METRICS = ["recall_at_k", "mrr", "ndcg"] as const;
 type Metric = (typeof METRICS)[number];
@@ -275,10 +275,9 @@ export function Benchmark() {
       }
       hint={t.benchHint}
       className="span-3"
-      actions={bench?.preview && <PreviewBadge />}
     >
       {bench ? (
-        <Results bench={bench.data} />
+        <Results bench={bench} />
       ) : benchState === "running" ? (
         <div className="bench-loading" role="status" aria-live="polite">
           <p className="muted">

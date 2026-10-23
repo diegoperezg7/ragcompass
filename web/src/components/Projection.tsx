@@ -3,8 +3,8 @@ import { useEffect, useMemo, useState } from "react";
 import { ApiError, fetchProjection } from "../api";
 import { useWidth } from "../lib/useWidth";
 import { useStore, useT } from "../store";
-import type { Loaded, Projection as ProjectionData, Report } from "../types";
-import { Empty, Panel, PreviewBadge, Skeleton, TipRows, useTipProps } from "./ui";
+import type { Projection as ProjectionData, Report } from "../types";
+import { Empty, Panel, Skeleton, TipRows, useTipProps } from "./ui";
 
 // Five colored files plus a gray "other": more hues would stop being distinguishable.
 const MAX_FILES = 5;
@@ -13,14 +13,14 @@ export function Projection({ report }: { report: Report }) {
   const t = useT();
   const { openExplorer, expire } = useStore();
   const tip = useTipProps();
-  const [state, setState] = useState<{ loaded?: Loaded<ProjectionData>; error?: "extra" | "failed" }>({});
+  const [state, setState] = useState<{ data?: ProjectionData; error?: "extra" | "failed" }>({});
   const [query, setQuery] = useState(0);
   const [ref, width] = useWidth<HTMLDivElement>(640);
 
   useEffect(() => {
     let live = true;
     fetchProjection(report)
-      .then((loaded) => live && setState({ loaded }))
+      .then((data) => live && setState({ data }))
       .catch((error: ApiError) => {
         if (!live) return;
         if (error.expired) expire();
@@ -31,7 +31,7 @@ export function Projection({ report }: { report: Report }) {
     };
   }, [report, expire]);
 
-  const data = state.loaded?.data;
+  const data = state.data;
   const files = useMemo(() => {
     const counts = new Map<string, number>();
     data?.points.forEach((p) => counts.set(p.file, (counts.get(p.file) ?? 0) + 1));
@@ -59,7 +59,6 @@ export function Projection({ report }: { report: Report }) {
       }
       hint={data ? `${t.projectionHint} ${data.model} · PCA ${(100 * (data.explained_variance[0] + data.explained_variance[1])).toFixed(0)}% ${t.varianceLower}` : t.projectionHint}
       className="span-2"
-      actions={state.loaded?.preview && <PreviewBadge />}
     >
       {state.error ? (
         <Empty icon={<Orbit size={20} />} title={state.error === "extra" ? t.projectionExtra : t.projectionFailed}>

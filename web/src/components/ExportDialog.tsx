@@ -1,10 +1,10 @@
 import { Check, Copy, Download, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { ApiError, fetchExport } from "../api";
+import { ApiError, fetchExport, renderReport } from "../api";
 import { highlight } from "../lib/highlight";
 import { useStore, useT } from "../store";
-import type { ExportTarget, Loaded, Report } from "../types";
-import { PreviewBadge, Skeleton } from "./ui";
+import type { ExportTarget, Report } from "../types";
+import { Skeleton } from "./ui";
 
 const TARGETS: { id: ExportTarget; label: string; file: string }[] = [
   { id: "yaml", label: "YAML", file: "ragcompass.yaml" },
@@ -18,7 +18,7 @@ export function ExportDialog({ report }: { report: Report }) {
   const { lang, exportOpen, setExportOpen, expire } = useStore();
   const ref = useRef<HTMLDialogElement>(null);
   const [target, setTarget] = useState<ExportTarget>("yaml");
-  const [cache, setCache] = useState<Partial<Record<ExportTarget, Loaded<string>>>>({});
+  const [cache, setCache] = useState<Partial<Record<ExportTarget, string>>>({});
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -29,13 +29,13 @@ export function ExportDialog({ report }: { report: Report }) {
     if (!exportOpen && dialog.open) dialog.close?.() ?? dialog.removeAttribute("open");
   }, [exportOpen]);
 
-  useEffect(() => setCache({}), [report, lang]);
+  useEffect(() => setCache({}), [report]);
 
   useEffect(() => {
     if (!exportOpen || cache[target]) return;
     let live = true;
     setError(null);
-    fetchExport(report, target, lang)
+    fetchExport(report, target)
       .then((loaded) => live && setCache((c) => ({ ...c, [target]: loaded })))
       .catch((e: ApiError) => {
         if (!live) return;
@@ -47,25 +47,33 @@ export function ExportDialog({ report }: { report: Report }) {
     return () => {
       live = false;
     };
-  }, [exportOpen, target, cache, report, lang, setExportOpen, expire]);
+  }, [exportOpen, target, cache, report, setExportOpen, expire]);
 
   const current = cache[target];
   const meta = TARGETS.find((x) => x.id === target)!;
   const copy = async () => {
     if (!current) return;
     try {
-      await navigator.clipboard.writeText(current.data);
+      await navigator.clipboard.writeText(current);
       setCopied(true);
       setTimeout(() => setCopied(false), 1600);
     } catch {
       /* clipboard blocked: the text stays selectable */
     }
   };
-  const download = () => {
-    if (!current) return;
-    const url = URL.createObjectURL(new Blob([current.data], { type: "text/plain" }));
-    Object.assign(document.createElement("a"), { href: url, download: meta.file }).click();
+  const save = (body: string, file: string) => {
+    const url = URL.createObjectURL(new Blob([body], { type: "text/plain" }));
+    Object.assign(document.createElement("a"), { href: url, download: file }).click();
     URL.revokeObjectURL(url);
+  };
+  const download = () => current && save(current, meta.file);
+  const downloadReport = async (format: "md" | "json") => {
+    try {
+      const body = format === "json" ? JSON.stringify(report, null, 2) : await renderReport(report, "md", lang);
+      save(body, `ragcompass-report.${format}`);
+    } catch (e) {
+      setError((e as Error).message);
+    }
   };
   const onTabKey = (e: React.KeyboardEvent) => {
     const i = TARGETS.findIndex((x) => x.id === target);
@@ -106,7 +114,6 @@ export function ExportDialog({ report }: { report: Report }) {
         <div id="export-panel" role="tabpanel" aria-labelledby={`export-tab-${target}`} className="code-panel">
           <div className="code-bar">
             <span className="mono muted">{meta.file}</span>
-            {current?.preview && <PreviewBadge />}
             <span className="spacer" />
             <button className="button sm" onClick={copy} disabled={!current}>
               {copied ? <Check size={14} aria-hidden /> : <Copy size={14} aria-hidden />}
@@ -124,7 +131,7 @@ export function ExportDialog({ report }: { report: Report }) {
           ) : current ? (
             <pre className="code" tabIndex={0}>
               <code>
-                {highlight(current.data, target === "yaml" ? "yaml" : "python").map((tok, i) =>
+                {highlight(current, target === "yaml" ? "yaml" : "python").map((tok, i) =>
                   tok.kind === "plain" ? tok.text : (
                     <span key={i} className={`tok-${tok.kind}`}>
                       {tok.text}
@@ -140,6 +147,15 @@ export function ExportDialog({ report }: { report: Report }) {
               ))}
             </div>
           )}
+          <div className="dialog-foot">
+            <span className="muted">{t.fullReport}</span>
+            <button className="link-button" onClick={() => downloadReport("md")}>
+              Markdown
+            </button>
+            <button className="link-button" onClick={() => downloadReport("json")}>
+              JSON
+            </button>
+          </div>
           <span className="sr-only" aria-live="polite">
             {copied ? t.copied : ""}
           </span>
