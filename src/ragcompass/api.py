@@ -217,6 +217,29 @@ def get_bench(report_id: str, lang: Annotated[Lang, Query()] = "en") -> dict:
     return _localized_bench(report.bench, lang)
 
 
+@app.get("/api/report/{report_id}/projection")
+def get_projection(
+    report_id: str,
+    group: Annotated[Literal["documents", "tables", "code"] | None, Query()] = None,
+    strategy: Annotated[str | None, Query()] = None,
+    size: Annotated[int | None, Query()] = None,
+    overlap: Annotated[int | None, Query()] = None,
+    queries: Annotated[bool, Query()] = True,
+    seed: Annotated[int, Query()] = 13,
+) -> dict:
+    """2D PCA map of the chunk embeddings of one chunking, with the benchmark queries."""
+    from ragcompass import embeddings
+    from ragcompass.projection import project
+
+    entry = entry_or_404(report_id)
+    try:
+        return project(entry.analysis, group, strategy, size, overlap, queries, seed)
+    except embeddings.EmbeddingsUnavailable as exc:
+        raise HTTPException(501, str(exc)) from exc
+    except ExplorerError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 def _localized_bench(bench: dict, lang: str) -> dict:
     bench = {**bench, "decisions": [dict(d) for d in bench["decisions"]]}
     for decision in bench["decisions"]:
