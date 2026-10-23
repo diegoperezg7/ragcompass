@@ -418,9 +418,23 @@ def recommend(
             "retrieval.hybrid.yes" if hybrid else "retrieval.hybrid.no",
             {"codes": density[1], "ids": density[0]},
         )
+    # Retriever: rule-based from the identifier signal, replaced by the benchmark when it can decide.
+    if hybrid is None:
+        retriever, r_parts = None, [("retrieval.retriever.undecided", {})]
+    else:
+        retriever = "hybrid" if hybrid else "dense"
+        r_parts = [("retrieval.retriever.hybrid" if hybrid else "retrieval.retriever.dense", {})]
+    r_basis = "rule-based"
     h_parts, h_basis = [h_part], "rule-based"
-    if m := measured.get("retrieval.hybrid_bm25"):
-        hybrid, h_parts, h_basis = (m.value if m.changed else hybrid), h_parts + m.parts, m.basis
+    if m := measured.get("retrieval.retriever"):
+        r_parts, r_basis = r_parts + m.parts, m.basis
+        if m.changed:
+            retriever = m.value
+        if m.basis == "measured":
+            # The hybrid flag follows the measured retriever, so the two settings never disagree.
+            hybrid, h_basis = retriever == "hybrid", "measured"
+            h_parts = h_parts + [("bench.hybrid.follows", {"retriever": retriever})]
+    plan.add("retrieval.retriever", retriever, r_parts, basis=r_basis)
     plan.add(
         "retrieval.hybrid_bm25",
         hybrid,
@@ -497,6 +511,7 @@ def recommend(
         "retrieval": {
             "top_k": top_k,
             "candidates": candidates,
+            "retriever": retriever,
             "hybrid_bm25": hybrid,
             "reranker": "bge-reranker-v2-m3" if rerank else None,
         },

@@ -252,7 +252,10 @@ class BenchResult(BaseModel):
     k: int
     seed: int
     queries: int
-    mode: str  # template or llm
+    mode: str  # template, llm or file
+    query_kinds: dict[str, int] = Field(default_factory=dict)  # keyphrase, masked, question, llm, file
+    # IDF-weighted share of each source's vocabulary repeated by its query: high values favour BM25
+    lexical_overlap: dict[str, Any] = Field(default_factory=dict)  # {"mean": float, "by_kind": {...}}
     retrievers: list[str]
     dense_model: str | None
     warnings: list[str]

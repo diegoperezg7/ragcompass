@@ -70,6 +70,14 @@ def bench(
         str, typer.Option(help="How queries are written: template or llm (local Ollama).")
     ] = "template",
     num_queries: Annotated[int, typer.Option("--num-queries", "-n", help="Number of queries.")] = 60,
+    queries_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--queries-file",
+            exists=True,
+            help='Your own queries: JSON list or JSON Lines of {"text", "answer", "file"?, "id"?}.',
+        ),
+    ] = None,
     seed: Annotated[int, typer.Option(help="Seed for queries and bootstrap intervals.")] = 13,
     k: Annotated[
         int | None, typer.Option(help="Cut-off for the headline metrics (default: recommended top-k).")
@@ -107,7 +115,7 @@ def bench(
         raise typer.BadParameter(str(exc), param_hint="--tokenizer") from exc
     analysis = analysis_of(path, tokenizer=active)
     try:
-        run = benchmark.run_bench(analysis, num_queries, seed, k, queries, dense)
+        run = benchmark.run_bench(analysis, num_queries, seed, k, queries, dense, queries_file)
     except ValueError as exc:
         err.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc

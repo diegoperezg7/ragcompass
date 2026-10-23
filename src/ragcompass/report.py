@@ -213,6 +213,23 @@ def _bench_summary(bench: dict, lang: str) -> str:
     )
 
 
+def _shown_warnings(bench: dict) -> list[str]:
+    """Warnings minus the synthetic-query one, which the translated note already states."""
+    return [w for w in bench["warnings"] if not w.startswith("synthetic queries")]
+
+
+def _bench_queries(bench: dict, lang: str) -> str:
+    num = Formatter(lang).format_field
+    overlap = bench.get("lexical_overlap") or {}
+    return label(
+        "bench_queries",
+        lang,
+        kinds=", ".join(f"{kind} {count}" for kind, count in bench.get("query_kinds", {}).items()),
+        overlap=num(overlap.get("mean", 0.0), ""),
+        by_kind=", ".join(f"{kind} {num(value, '')}" for kind, value in overlap.get("by_kind", {}).items()),
+    )
+
+
 def bench_markdown(report: Report) -> list[str]:
     lang, bench = report.lang, report.bench
     k = bench["k"]
@@ -225,7 +242,16 @@ def bench_markdown(report: Report) -> list[str]:
         label("index_ms", lang),
         label("query_ms", lang),
     ]
-    lines = [f"## {label('benchmark', lang)}", "", _bench_summary(bench, lang), ""]
+    lines = [
+        f"## {label('benchmark', lang)}",
+        "",
+        _bench_summary(bench, lang),
+        "",
+        _bench_queries(bench, lang),
+        "",
+    ]
+    if bench["mode"] != "file":
+        lines += [f"> {label('bench_note', lang)}", ""]
     lines += [_md_table(headers, _bench_rows(bench, lang)), ""]
     lines += [f"### {label('decisions', lang)}", ""]
     for d in bench["decisions"]:
@@ -233,7 +259,7 @@ def bench_markdown(report: Report) -> list[str]:
         lines.append(
             f"- **{d['key']}** ({label(d['basis'], lang)}, {state}): {d['reason_i18n'].get(lang, d['reason'])}"
         )
-    for warning in bench["warnings"]:
+    for warning in _shown_warnings(bench):
         lines.append(f"- {label('warning', lang)}: {warning}")
     return lines
 
@@ -264,8 +290,11 @@ def render_bench(report: Report, console: Console) -> None:
         decisions.add_row(
             d["key"], f"{label(d['basis'], lang)}, {state}", d["reason_i18n"].get(lang, d["reason"])
         )
-    body = [Text(_bench_summary(bench, lang), style="dim"), table, Text(""), decisions]
-    body += [Text(f"{label('warning', lang)}: {w}", style="yellow") for w in bench["warnings"]]
+    body = [Text(_bench_summary(bench, lang), style="dim"), Text(_bench_queries(bench, lang), style="dim")]
+    if bench["mode"] != "file":
+        body.append(Text(label("bench_note", lang), style="yellow"))
+    body += [table, Text(""), decisions]
+    body += [Text(f"{label('warning', lang)}: {w}", style="yellow") for w in _shown_warnings(bench)]
     console.print(
         Panel(Group(*body), title=label("benchmark", lang), title_align="left", border_style=ACCENT)
     )

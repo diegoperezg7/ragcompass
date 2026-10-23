@@ -77,6 +77,9 @@ Body: a `Report` the client already has. Query: `format=md|yaml` (required), `la
       "reason_parts": [ { "id": "chunking.size.structured", "params": { "share": 100, "median": 75 } } ],
       "evidence": { "chunks": 15, "damage": 13.3, "fixed_baseline_damage": 191.0 },
       "basis": "rule-based"                   // or "measured" after a benchmark
+      // keys: parser.<kind>, chunking.<group>, vectors, embedding.dimension, embedding.quantization,
+      // embedding.cost, retrieval.retriever (bm25|dense|hybrid), retrieval.hybrid_bm25, retrieval.top_k,
+      // retrieval.reranker, metadata
   } ],
   "index": [ { "dimension": 1024, "vectors": 30, "float32_bytes": 122880, "int8_bytes": 30720, "hnsw_overhead_bytes": 3840 } ],
   "costs": [ { "model": "openai text-embedding-3-small", "usd_per_million": 0.02, "tokens": 5956, "usd": 0.0001 } ],
@@ -135,8 +138,12 @@ Measures retrieval quality of the recommended chunking against the next candidat
 embeddings (local, via fastembed) and hybrid (reciprocal rank fusion). Without the `bench` extra only BM25 runs,
 `warnings` says so and the hybrid decision stays rule-based.
 
-Queries are generated deterministically from the corpus with `seed`: keyphrases or template questions drawn from a
-source sentence or table row. The ground truth is the character span of that source, so chunkings of different
+Queries are generated deterministically from the corpus with `seed`, in equal thirds of three kinds drawn from a
+source sentence or table row: `keyphrase` (5-8 content words), `masked` (the same minus the rarest 40% of words,
+codes and numbers first, which are what makes lexical matching easy) and `question` (masked words in a question
+template). `lexical_overlap` is the IDF-weighted share of each source's vocabulary that its query repeats; above 0.5
+`warnings` flags that the benchmark favours BM25. Synthetic queries are an approximation: `mode=llm` or a query file
+measure more reliably, and the web should say so when `mode` is not `file`. The ground truth is the character span of that source, so chunkings of different
 shapes are judged on the same targets: a retrieved chunk is relevant when it overlaps the span.
 
 ### `POST /api/report/{report_id}/bench`
@@ -162,7 +169,9 @@ The last result, or 404 if no benchmark has run.
   "k": 5,
   "seed": 13,
   "queries": 60,
-  "mode": "template",
+  "mode": "template",                          // template, llm or file (CLI --queries-file)
+  "query_kinds": { "keyphrase": 20, "masked": 20, "question": 20 },
+  "lexical_overlap": { "mean": 0.298, "by_kind": { "keyphrase": 0.391, "masked": 0.216, "question": 0.288 } },
   "retrievers": ["bm25", "dense", "hybrid"],  // what could run
   "dense_model": "BAAI/bge-small-en-v1.5",    // null without the extra
   "warnings": [],
@@ -184,7 +193,7 @@ The last result, or 404 if no benchmark has run.
   "winner": { "label": "heading 256/0 · hybrid", "runner_up": "recursive 256/0 · hybrid",
               "significant": true, "margin": { "mean": 0.06, "ci": [0.02, 0.10] } },
   "decisions": [ {
-      "key": "chunking.documents",             // also retrieval.top_k and retrieval.hybrid_bm25
+      "key": "chunking.documents",             // also retrieval.retriever and retrieval.top_k
       "basis": "measured",                     // "rule-based" when the benchmark could not decide
       "rule_value": { "strategy": "heading", "size": 256, "overlap": 0 },
       "measured_value": { "strategy": "heading", "size": 256, "overlap": 0 },
@@ -243,3 +252,15 @@ is not installed.
 ```
 
 At most 2,000 points are returned; larger corpora are sampled deterministically with `seed`.
+
+## Query files (CLI)
+
+`ragcompass bench <path> --queries-file queries.jsonl` replaces the generated queries with your own. JSON list or
+JSON Lines; each entry:
+
+```json
+{"id": "u1", "text": "how do I open the back cover?", "answer": "Remove the four screws of the rear grille with a T10 driver.", "file": "hx200-maintenance-manual.pdf"}
+```
+
+`text` is the query, `answer` a passage copied from the document (located with whitespace normalised; it becomes the
+ground-truth span), `file` optional (otherwise every file is searched), `id` optional.

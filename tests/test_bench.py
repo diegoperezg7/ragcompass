@@ -82,13 +82,18 @@ def test_bm25_only_bench(bm25_run):
     for config in result.configs:
         assert config.ndcg.ci[0] <= config.ndcg.mean <= config.ndcg.ci[1]
         assert 0 <= config.recall_at_k.mean <= 1
-    hybrid = next(d for d in result.decisions if d.key == "retrieval.hybrid_bm25")
-    assert hybrid.basis == "rule-based" and not hybrid.changed
+    retriever = next(d for d in result.decisions if d.key == "retrieval.retriever")
+    assert retriever.basis == "rule-based" and not retriever.changed
     assert {d.key for d in result.decisions} == {
         "chunking.documents",
-        "retrieval.hybrid_bm25",
+        "retrieval.retriever",
         "retrieval.top_k",
     }
+    assert result.query_kinds == {"keyphrase": 10, "masked": 10, "question": 10}
+    assert 0 < result.lexical_overlap["mean"] < 1
+    by_kind = result.lexical_overlap["by_kind"]
+    assert by_kind["masked"] < by_kind["keyphrase"]  # masking removes the distinctive words
+    assert any("approximate real ones" in w for w in result.warnings)
 
 
 def test_bench_is_reproducible(analysis, bm25_run):
@@ -124,6 +129,7 @@ def test_apply_marks_measured_recommendations():
     assert basis["chunking.documents"] == "measured"
     assert basis["retrieval.top_k"] == "measured"
     assert basis["retrieval.hybrid_bm25"] == "rule-based"  # dense not measured
+    assert basis["retrieval.retriever"] == "rule-based"
     top_k = next(r for r in report.recommendations if r.key == "retrieval.top_k")
     assert "Benchmark" in top_k.reason and "Benchmark" in top_k.reason_i18n["es"]
 
@@ -159,3 +165,65 @@ def test_missing_extra_is_reported(analysis, monkeypatch):
     result = bench.run_bench(analysis, queries=10, seed=2).result
     assert result.retrievers == ["bm25"]
     assert any("bench extra" in w for w in result.warnings)
+
+
+def _retriever_decision(analysis, run, scores):
+    from types import SimpleNamespace
+
+    entries = []
+    for entry in run.entries:
+        for retriever in ("bm25", "dense", "hybrid"):
+            per_query = [
+                dict(q, ndcg=scores[retriever] + 0.01 * (i % 3)) for i, q in enumerate(entry.per_query)
+            ]
+            entries.append(
+                bench.Entry(entry.candidate, retriever, entry.chunks, entry.runs, per_query, 1.0, [1.0])
+            )
+    boot = Bootstrap(len(run.queries), 7)
+    _, measured, decisions = bench._decide(
+        analysis, entries, [], ["bm25", "dense", "hybrid"], 5, boot, len(run.queries)
+    )
+    return SimpleNamespace(
+        m=measured["retrieval.retriever"], d=next(d for d in decisions if d.key == "retrieval.retriever")
+    )
+
+
+def test_retriever_decision_cites_all_three(analysis, bm25_run):
+    clear = _retriever_decision(analysis, bm25_run, {"bm25": 0.9, "dense": 0.5, "hybrid": 0.6})
+    assert clear.m.value == "bm25" and clear.m.basis == "measured"
+    assert all(word in clear.d.reason for word in ("bm25 0.9", "dense 0.5", "hybrid 0.6"))
+    robust = _retriever_decision(analysis, bm25_run, {"bm25": 0.9, "dense": 0.5, "hybrid": 0.9})
+    assert robust.m.value == "hybrid"
+    assert "within noise" in robust.d.reason
+
+
+def test_user_query_file(tmp_path, analysis):
+    passage = "Remove the four screws of the rear grille with a T10 driver."
+    path = tmp_path / "queries.jsonl"
+    path.write_text(
+        json.dumps({"id": "u1", "text": "how do I open the back cover?", "answer": passage})
+        + "\n"
+        + json.dumps(
+            {"text": "warranty length", "answer": "veinticuatro meses", "file": "politica-devoluciones.docx"}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    queries = bench.load_queries(analysis, path)
+    assert [q.id for q in queries] == ["u1", "q002"]
+    first = queries[0]
+    assert first.file == "hx200-maintenance-manual.pdf" and first.kind == "file"
+    assert " ".join(analysis.docs[first.file].layout.text[first.start : first.end].split()) == passage
+    result = bench.run_bench(analysis, dense=False, queries_file=path).result
+    assert result.mode == "file" and result.queries == 2
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps([{"text": "x", "answer": "not in any document at all"}]))
+    with pytest.raises(ValueError, match="not found"):
+        bench.load_queries(analysis, bad)
+
+
+def test_llm_queries_fall_back_to_templates(analysis, monkeypatch):
+    monkeypatch.setenv("OLLAMA_HOST", "http://127.0.0.1:9")  # nothing listens on the discard port
+    result = bench.run_bench(analysis, queries=6, seed=4, mode="llm", dense=False).result
+    assert result.mode == "template"
+    assert any("LLM queries unavailable" in w for w in result.warnings)

@@ -70,6 +70,7 @@ class Query:
     file: str
     start: int
     end: int
+    kind: str = "keyphrase"  # keyphrase, masked, question, llm or file
 
 
 @dataclass(frozen=True)
@@ -216,21 +217,80 @@ def _units(analysis: Analysis) -> list[Unit]:
     return units
 
 
-def _template_query(unit: Unit, rng: random.Random) -> str:
+QUERY_KINDS = ("keyphrase", "masked", "question")
+MASK_SHARE = 0.4  # share of the rarest words removed from masked queries
+OVERLAP_WARNING = 0.5
+
+
+# Function words that the language-detection lists leave out but that make poor query terms.
+_QUERY_STOPWORDS = {
+    "en": "you your our their they them there these those been has had were would should could its into than "
+    "then also any all each when where what who how more most such only own same other some very just will can "
+    "may must does did done about after before over under again",
+    "es": "todos todas este esta estos estas sin sobre entre hasta desde cada otro otra muy ser está están son "
+    "han hay puede pueden debe deben tiene tienen también cuando donde",
+}
+QUERY_STOPWORDS = {lang: set(words.split()) for lang, words in _QUERY_STOPWORDS.items()}
+
+
+def _content(text: str, language: str) -> list[str]:
+    stop = STOPWORDS.get(language, STOPWORDS["en"]) | QUERY_STOPWORDS.get(language, QUERY_STOPWORDS["en"])
+    words = [w for w in WORD.findall(text) if len(w) > 2 and w.lower() not in stop]
+    return words or WORD.findall(text)
+
+
+def idf_table(units: list[Unit]) -> dict[str, float]:
+    """Inverse document frequency of every term across the query sources."""
+    df: Counter[str] = Counter()
+    for unit in units:
+        df.update(set(terms(unit.text)))
+    n = len(units) or 1
+    return {term: math.log((n + 1) / (count + 0.5)) for term, count in df.items()}
+
+
+def _mask(words: list[str], idf: dict[str, float]) -> list[str]:
+    """Drop the rarest words (codes and numbers first): the ones that make lexical matching easy."""
+    if len(words) < 4:
+        return words
+    drop = max(1, math.ceil(MASK_SHARE * len(words)))
+    rank = sorted(
+        range(len(words)),
+        key=lambda i: (-(any(c.isdigit() for c in words[i])), -idf.get(words[i].lower(), 0), i),
+    )
+    removed = set(rank[:drop])
+    return [w for i, w in enumerate(words) if i not in removed]
+
+
+def _template_query(unit: Unit, rng: random.Random, idf: dict[str, float], kind: str) -> str:
     lang = unit.language if unit.language in QUESTION else "en"
     if unit.cells is not None and unit.header is not None:
         key = next(cell for cell in unit.cells if cell)
-        columns = [h for h, cell in zip(unit.header, unit.cells, strict=False) if h and cell and cell != key]
-        column = rng.choice(columns) if columns else unit.header[0]
+        pairs = [
+            (h, cell) for h, cell in zip(unit.header, unit.cells, strict=False) if h and cell and cell != key
+        ]
+        column = rng.choice(pairs)[0] if pairs else unit.header[0]
+        if kind != "keyphrase" and len(pairs) > 1:
+            # Ask through the most common other value instead of the row's identifier.
+            others = [(h, cell) for h, cell in pairs if h != column]
+            worded = [hc for hc in others if any(ch.isalpha() for ch in hc[1])] or others
+            key = min(worded, key=lambda hc: sum(idf.get(t, 0) for t in terms(hc[1])))[1]
         return ROW_QUESTION[lang].format(column, key)
-    stop = STOPWORDS.get(unit.language, STOPWORDS["en"])
-    content = [w for w in WORD.findall(unit.text) if len(w) > 2 and w.lower() not in stop]
-    if not content:
-        content = WORD.findall(unit.text)
-    length = min(len(content), rng.randint(4, 7))
+    content = _content(unit.text, unit.language)
+    length = min(len(content), rng.randint(5, 8))
     first = rng.randint(0, len(content) - length)
-    phrase = " ".join(content[first : first + length])
-    return QUESTION[lang].format(phrase) if rng.random() < 0.5 else phrase
+    words = content[first : first + length]
+    if kind == "keyphrase":
+        return " ".join(words)
+    masked = " ".join(_mask(words, idf))
+    return QUESTION[lang].format(masked) if kind == "question" else masked
+
+
+def lexical_overlap(query: str, source: str, idf: dict[str, float]) -> float:
+    """IDF-weighted share of the source's vocabulary that the query repeats (0 = none, 1 = all)."""
+    source_terms = set(terms(source))
+    query_terms = set(terms(query)) & source_terms
+    total = sum(idf.get(t, 0) for t in source_terms)
+    return sum(idf.get(t, 0) for t in query_terms) / total if total else 0.0
 
 
 def _llm_query(unit: Unit) -> str:
@@ -258,12 +318,58 @@ def generate_queries(
 ) -> list[Query]:
     rng = random.Random(seed)
     units = _units(analysis)
+    idf = idf_table(units)
     rng.shuffle(units)
     queries = []
     for i, unit in enumerate(units[:count], start=1):
-        text = _llm_query(unit) if mode == "llm" else _template_query(unit, rng)
-        queries.append(Query(f"q{i:03d}", text, unit.file, unit.start, unit.end))
+        if mode == "llm":
+            text, kind = _llm_query(unit), "llm"
+        else:
+            kind = QUERY_KINDS[(i - 1) % len(QUERY_KINDS)]  # equal thirds of each kind
+            text = _template_query(unit, rng, idf, kind)
+        queries.append(Query(f"q{i:03d}", text, unit.file, unit.start, unit.end, kind))
     return queries
+
+
+def load_queries(analysis: Analysis, path: str | Path) -> list[Query]:
+    """Read a user query set: JSON list or JSON Lines of {"text", "answer", "file"?, "id"?}.
+
+    ``answer`` is a passage copied from the document; it is located in the canonical text with
+    whitespace normalised, which gives the ground-truth span. ``file`` limits the search to one file.
+    """
+    raw = Path(path).read_text(encoding="utf-8")
+    items = (
+        json.loads(raw)
+        if raw.lstrip().startswith("[")
+        else [json.loads(line) for line in raw.splitlines() if line.strip()]
+    )
+    queries = []
+    for n, item in enumerate(items, start=1):
+        if not isinstance(item, dict) or not item.get("text") or not item.get("answer"):
+            raise ValueError(f"query {n}: each entry needs a 'text' and an 'answer' passage")
+        files = [item["file"]] if item.get("file") else sorted(analysis.docs)
+        span = None
+        for file in files:
+            if file not in analysis.docs:
+                raise ValueError(f"query {n}: unknown file {file!r}")
+            span = _locate(analysis.docs[file].layout.text, item["answer"])
+            if span:
+                queries.append(
+                    Query(str(item.get("id") or f"q{n:03d}"), item["text"], file, *span, kind="file")
+                )
+                break
+        if span is None:
+            raise ValueError(f"query {n}: the answer passage was not found in {', '.join(files)}")
+    return queries
+
+
+def _locate(text: str, passage: str) -> tuple[int, int] | None:
+    words = passage.split()
+    if not words:
+        return None
+    pattern = r"\s+".join(re.escape(w) for w in words)
+    match = re.search(pattern, text) or re.search(pattern, text, re.IGNORECASE)
+    return (match.start(), match.end()) if match else None
 
 
 # ---------------------------------------------------------------- retrievers
@@ -435,6 +541,7 @@ def run_bench(
     k: int | None = None,
     mode: str = "template",
     dense: bool = True,
+    queries_file: str | Path | None = None,
 ) -> BenchRun:
     started = time.perf_counter()
     warnings: list[str] = []
@@ -445,20 +552,33 @@ def run_bench(
     k = k or top_k_rec.value["final"]
     k = max(1, min(k, MAX_K))
 
-    try:
-        query_list = generate_queries(analysis, queries, seed, mode)
-    except Exception as exc:  # an unreachable Ollama falls back to templates
-        warnings.append(f"LLM queries unavailable ({exc}); used template queries")
-        mode = "template"
-        query_list = generate_queries(analysis, queries, seed, mode)
+    if queries_file is not None:
+        mode, query_list = "file", load_queries(analysis, queries_file)
+    else:
+        try:
+            query_list = generate_queries(analysis, queries, seed, mode)
+        except Exception as exc:  # an unreachable Ollama falls back to templates
+            warnings.append(f"LLM queries unavailable ({exc}); used template queries")
+            mode = "template"
+            query_list = generate_queries(analysis, queries, seed, mode)
+        if len(query_list) < queries:
+            warnings.append(f"only {len(query_list)} queries could be made from this corpus")
     if not query_list:
         raise ValueError("the corpus has no sentences or table rows to make queries from")
-    if len(query_list) < queries:
-        warnings.append(f"only {len(query_list)} queries could be made from this corpus")
+    idf = idf_table(_units(analysis))
+    overlaps: dict[str, list[float]] = defaultdict(list)
+    for query in query_list:
+        source = analysis.docs[query.file].layout.text[query.start : query.end]
+        overlaps[query.kind].append(lexical_overlap(query.text, source, idf))
+    overlap_mean = mean([v for values in overlaps.values() for v in values])
     if mode == "template":
         warnings.append(
-            "template queries reuse words of their source and favour BM25; "
-            "use --queries llm (local Ollama) for paraphrased questions"
+            "synthetic queries approximate real ones: they are built from words of their source; "
+            "--queries llm (local Ollama) or --queries-file with your own questions measure more reliably"
+        )
+    if overlap_mean > OVERLAP_WARNING:
+        warnings.append(
+            f"queries repeat {overlap_mean:.0%} of their source's distinctive vocabulary, which favours BM25"
         )
 
     embedder = None
@@ -512,6 +632,11 @@ def run_bench(
         seed=seed,
         queries=len(query_list),
         mode=mode,
+        query_kinds=dict(Counter(q.kind for q in query_list)),
+        lexical_overlap={
+            "mean": round(overlap_mean, 3),
+            "by_kind": {kind: round(mean(values), 3) for kind, values in overlaps.items()},
+        },
         retrievers=retrievers,
         dense_model=embedder.name if embedder else None,
         warnings=warnings,
@@ -573,7 +698,6 @@ def _decide(analysis, entries, configs, retrievers, k, boot, n_queries):
     def rec(key):
         return next(r for r in report.recommendations if r.key == key)
 
-    hybrid_rule = rec("retrieval.hybrid_bm25").value
     measured: dict[str, Measured] = {}
     decisions: list[BenchDecision] = []
 
@@ -632,33 +756,38 @@ def _decide(analysis, entries, configs, retrievers, k, boot, n_queries):
     chosen = measured[f"chunking.{group}"].value
     chosen_label = f"{chosen['strategy']} {chosen['size']}/{chosen['overlap']}"
 
-    # Hybrid BM25 means adding BM25 to dense retrieval: compare hybrid with dense alone.
+    # Retriever: the three on the chosen chunking, with paired intervals.
+    rule_retriever = rec("retrieval.retriever").value
     if "hybrid" in retrievers:
-        hybrid, dense = by_label[f"{chosen_label} · hybrid"], by_label[f"{chosen_label} · dense"]
-        bm25 = by_label[f"{chosen_label} · bm25"]
-        gap = boot.difference(_ndcg(hybrid), _ndcg(dense))
+        options = {r: by_label[f"{chosen_label} · {r}"] for r in ("bm25", "dense", "hybrid")}
+        ranked = sorted(options, key=lambda r: -mean(_ndcg(options[r])))
+        best, second = ranked[0], ranked[1]
+        gap = boot.difference(_ndcg(options[best]), _ndcg(options[second]))
         params = {
             "k": k,
-            "hybrid": round(mean(_ndcg(hybrid)), 3),
-            "dense": round(mean(_ndcg(dense)), 3),
-            "bm25": round(mean(_ndcg(bm25)), 3),
+            **{r: round(mean(_ndcg(e)), 3) for r, e in options.items()},
+            "best": best,
+            "second": second,
             "gap": round(gap.mean, 3),
             "low": round(gap.ci[0], 3),
             "high": round(gap.ci[1], 3),
         }
-        if gap.ci[0] > 0:
-            m = Measured(True, [("bench.hybrid.better", params)], changed=hybrid_rule is not True)
-        elif gap.ci[1] < 0:
-            m = Measured(False, [("bench.hybrid.worse", params)], changed=hybrid_rule is not False)
+        hybrid_gap = boot.difference(_ndcg(options["hybrid"]), _ndcg(options["bm25"]))
+        if best == "bm25" and hybrid_gap.ci[1] >= 0 and hybrid_gap.ci[0] <= 0:
+            # BM25 leads but hybrid is not measurably worse: keep dense matching for paraphrases.
+            params.update(
+                gap=round(hybrid_gap.mean, 3), low=round(hybrid_gap.ci[0], 3), high=round(hybrid_gap.ci[1], 3)
+            )
+            m = Measured("hybrid", [("bench.retriever.robust", params)], changed=rule_retriever != "hybrid")
+        elif gap.ci[0] > 0:
+            m = Measured(best, [("bench.retriever.best", params)], changed=rule_retriever != best)
         else:
-            m = Measured(hybrid_rule, [("bench.hybrid.tie", params)], changed=False, basis="rule-based")
-        final = max((hybrid, dense) if m.value is not False else (dense,), key=lambda e: mean(_ndcg(e)))
-        if m.value:
-            final = hybrid
+            m = Measured(rule_retriever, [("bench.retriever.tie", params)], changed=False, basis="rule-based")
+        final = options[m.value] if m.value in options else options[best]
     else:
-        m = Measured(hybrid_rule, [("bench.hybrid.unavailable", {})], changed=False, basis="rule-based")
+        m = Measured(rule_retriever, [("bench.retriever.unavailable", {})], changed=False, basis="rule-based")
         final = by_label[f"{chosen_label} · bm25"]
-    decide("retrieval.hybrid_bm25", hybrid_rule, m)
+    decide("retrieval.retriever", rule_retriever, m)
 
     # Top-k: the smallest k that keeps most of recall@10 with the retriever that will be used.
     entry = final
@@ -769,9 +898,9 @@ def export_evalsmith(run: BenchRun, directory: str | Path, gate_margin: float = 
     chosen = next(d.measured_value for d in result.decisions if d.key.startswith("chunking."))
     label = f"{chosen['strategy']} {chosen['size']}/{chosen['overlap']}"
     entries = by_candidate[label]
-    hybrid = next((d.measured_value for d in result.decisions if d.key == "retrieval.hybrid_bm25"), None)
+    retriever = next((d.measured_value for d in result.decisions if d.key == "retrieval.retriever"), None)
     names = [e.retriever for e in entries]
-    primary = "hybrid" if hybrid and "hybrid" in names else names[-1]
+    primary = retriever if retriever in names else names[-1]
     base = f"configs/{_slug(label)}"
     qrels = json.loads((out / base / "qrels.json").read_text(encoding="utf-8"))
     primary_run = json.loads((out / base / "runs" / f"{primary}.json").read_text(encoding="utf-8"))
