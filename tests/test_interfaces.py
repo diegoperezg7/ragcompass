@@ -201,3 +201,36 @@ def test_chunk_explorer_errors():
     assert client.get(url, params={"file": "onboarding-handbook.md", "size": 4}).status_code == 422
     params = {"file": "onboarding-handbook.md", "strategy": "fixed", "size": 64, "overlap": 64}
     assert client.get(url, params=params).status_code == 422
+
+
+def test_bench_endpoints():
+    report_id = client.post("/api/sample").json()["id"]
+    assert client.get(f"/api/report/{report_id}/bench").status_code == 404
+    result = client.post(
+        f"/api/report/{report_id}/bench", params={"queries": 20, "dense": False, "lang": "es"}
+    ).json()
+    assert result["queries"] == 20 and result["configs"]
+    assert result["decisions"][0]["reason"] == result["decisions"][0]["reason_i18n"]["es"]
+    assert client.get(f"/api/report/{report_id}/bench").json()["seed"] == 13
+    report = client.get(f"/api/report/{report_id}").json()
+    assert report["bench"]["queries"] == 20
+    assert {r["basis"] for r in report["recommendations"]} == {"rule-based", "measured"}
+
+
+def test_cli_bench(tmp_path):
+    result = CliRunner().invoke(
+        cli,
+        [
+            "bench",
+            str(CORPUS),
+            "-n",
+            "15",
+            "--no-dense",
+            "--export-evalsmith",
+            str(tmp_path / "evals"),
+            "--md",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "## Retrieval benchmark" in result.stdout
+    assert (tmp_path / "evals" / "evalsmith.yaml").exists()

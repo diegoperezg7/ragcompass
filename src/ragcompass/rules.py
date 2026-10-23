@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 from collections import Counter
 from dataclasses import dataclass, field
+from typing import Any
 
 from ragcompass.messages import LANGUAGES, render_parts
 from ragcompass.models import (
@@ -94,13 +95,23 @@ Part = tuple[str, dict]
 
 
 @dataclass
+class Measured:
+    """A value decided by the benchmark, with the reason parts that explain it."""
+
+    value: Any
+    parts: list[Part]
+    changed: bool  # the measurement replaced the rule-based value
+    basis: str = "measured"  # "rule-based" when the benchmark ran but could not decide
+
+
+@dataclass
 class Plan:
     recommendations: list[Recommendation] = field(default_factory=list)
     index: list[IndexEstimate] = field(default_factory=list)
     costs: list[EmbeddingCost] = field(default_factory=list)
     config: dict = field(default_factory=dict)
 
-    def add(self, key: str, value, parts: list[Part], **evidence) -> None:
+    def add(self, key: str, value, parts: list[Part], basis: str = "rule-based", **evidence) -> None:
         """Record a setting with its reason, given as message ids and their parameters."""
         reason_parts = [ReasonPart(id=message_id, params=params) for message_id, params in parts]
         dumped = [part.model_dump() for part in reason_parts]
@@ -113,6 +124,7 @@ class Plan:
                 reason_i18n=texts,
                 reason_parts=reason_parts,
                 evidence=evidence,
+                basis=basis,
             )
         )
 
@@ -214,7 +226,12 @@ def _overlap_for(results: dict[tuple[str, int, int], SimulationResult], strategy
 
 
 def _chunking_rules(
-    plan: Plan, group: str, docs: list[Doc], sims: list[SimulationResult], density: tuple[float, float, float]
+    plan: Plan,
+    group: str,
+    docs: list[Doc],
+    sims: list[SimulationResult],
+    density: tuple[float, float, float],
+    measured: Measured | None = None,
 ) -> SimulationResult:
     results = {(s.strategy, s.size, s.overlap): s for s in sims if s.group == group}
     strategies = sorted({s.strategy for s in sims if s.group == group}, key=PREFERENCE.index)
@@ -271,10 +288,18 @@ def _chunking_rules(
                 {"overlap": best.overlap, "cuts": no_overlap.sentence_cut_pct, "overhead": best.overhead_pct},
             )
         )
+    basis = "rule-based"
+    if measured is not None:
+        basis = measured.basis
+        parts = parts + measured.parts
+        if measured.changed:
+            v = measured.value
+            best = results[(v["strategy"], v["size"], v["overlap"])]
     plan.add(
         f"chunking.{group}",
-        {"strategy": best.strategy, "size": size, "overlap": best.overlap},
+        {"strategy": best.strategy, "size": best.size, "overlap": best.overlap},
         parts,
+        basis=basis,
         chunks=best.chunks,
         damage=best.damage,
         fixed_baseline_damage=fixed.damage,
@@ -282,7 +307,14 @@ def _chunking_rules(
     return best
 
 
-def recommend(profiles: list[DocProfile], docs: list[Doc], sims: list[SimulationResult]) -> Plan:
+def recommend(
+    profiles: list[DocProfile],
+    docs: list[Doc],
+    sims: list[SimulationResult],
+    measured: dict[str, Measured] | None = None,
+) -> Plan:
+    """Derive every setting. ``measured`` holds benchmark decisions keyed by recommendation key."""
+    measured = measured or {}
     plan = Plan()
     usable = [p for p in profiles if not p.error and p.kind != DocKind.UNSUPPORTED]
     density = _corpus_density(usable)
@@ -297,7 +329,8 @@ def recommend(profiles: list[DocProfile], docs: list[Doc], sims: list[Simulation
         if group and len(doc.layout.tokens):
             groups.setdefault(group, []).append(doc)
     chosen = {
-        group: _chunking_rules(plan, group, members, sims, density) for group, members in groups.items()
+        group: _chunking_rules(plan, group, members, sims, density, measured.get(f"chunking.{group}"))
+        for group, members in groups.items()
     }
 
     # Vectors: simulated chunks, plus one caption per image and an estimate for scanned pages.
@@ -385,11 +418,24 @@ def recommend(profiles: list[DocProfile], docs: list[Doc], sims: list[Simulation
             "retrieval.hybrid.yes" if hybrid else "retrieval.hybrid.no",
             {"codes": density[1], "ids": density[0]},
         )
-    plan.add("retrieval.hybrid_bm25", hybrid, [h_part], ids_per_1k=density[0], codes_per_1k=density[1])
+    h_parts, h_basis = [h_part], "rule-based"
+    if m := measured.get("retrieval.hybrid_bm25"):
+        hybrid, h_parts, h_basis = (m.value if m.changed else hybrid), h_parts + m.parts, m.basis
+    plan.add(
+        "retrieval.hybrid_bm25",
+        hybrid,
+        h_parts,
+        basis=h_basis,
+        ids_per_1k=density[0],
+        codes_per_1k=density[1],
+    )
 
     # Size top-k for the largest chunks any group produces, so the budget holds whatever is retrieved.
     largest = max((r.size for r in chosen.values()), default=DEFAULT_PROSE_SIZE)
     top_k = max(1, min(MAX_TOP_K, CONTEXT_BUDGET // largest, vectors or 1))
+    k_measured = measured.get("retrieval.top_k")
+    if k_measured and k_measured.changed:
+        top_k = max(1, min(top_k, k_measured.value))  # the measurement may lower k, never break the budget
     rerank = vectors >= RERANK_MIN_VECTORS
     candidates = min(top_k * RERANK_CANDIDATES, vectors) if rerank else top_k
     parts = [("retrieval.top_k", {"budget": CONTEXT_BUDGET, "largest": largest, "k": top_k})]
@@ -397,7 +443,16 @@ def recommend(profiles: list[DocProfile], docs: list[Doc], sims: list[Simulation
         parts.append(("retrieval.top_k.all", {}))
     if rerank:
         parts.append(("retrieval.top_k.rerank", {"candidates": candidates}))
-    plan.add("retrieval.top_k", {"candidates": candidates, "final": top_k}, parts, largest_chunk=largest)
+    k_basis = "rule-based"
+    if k_measured:
+        parts, k_basis = parts + k_measured.parts, k_measured.basis
+    plan.add(
+        "retrieval.top_k",
+        {"candidates": candidates, "final": top_k},
+        parts,
+        basis=k_basis,
+        largest_chunk=largest,
+    )
     r_params = {"vectors": vectors, "threshold": RERANK_MIN_VECTORS, "candidates": candidates, "k": top_k}
     plan.add(
         "retrieval.reranker",

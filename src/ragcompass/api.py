@@ -184,6 +184,46 @@ def get_chunks(
         raise HTTPException(422, str(exc)) from exc
 
 
+@app.post("/api/report/{report_id}/bench")
+def post_bench(
+    report_id: str,
+    queries: Annotated[int, Query(ge=1, le=500)] = 60,
+    seed: Annotated[int, Query()] = 13,
+    k: Annotated[int | None, Query(ge=1, le=10)] = None,
+    mode: Annotated[Literal["template", "llm"], Query()] = "template",
+    dense: Annotated[
+        bool, Query(description="Measure dense and hybrid when the bench extra is installed")
+    ] = True,
+    lang: Annotated[Lang, Query()] = "en",
+) -> dict:
+    """Run the retrieval benchmark and fold its decisions into the stored report."""
+    from ragcompass import bench
+
+    entry = entry_or_404(report_id)
+    try:
+        run = bench.run_bench(entry.analysis, queries, seed, k, mode, dense)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    bench.apply(entry.analysis, run)
+    entry.bench = run
+    return _localized_bench(entry.analysis.report.bench, lang)
+
+
+@app.get("/api/report/{report_id}/bench")
+def get_bench(report_id: str, lang: Annotated[Lang, Query()] = "en") -> dict:
+    report = entry_or_404(report_id).analysis.report
+    if report.bench is None:
+        raise HTTPException(404, "no benchmark has run for this report; POST to this URL to run one")
+    return _localized_bench(report.bench, lang)
+
+
+def _localized_bench(bench: dict, lang: str) -> dict:
+    bench = {**bench, "decisions": [dict(d) for d in bench["decisions"]]}
+    for decision in bench["decisions"]:
+        decision["reason"] = decision["reason_i18n"].get(lang, decision["reason"])
+    return bench
+
+
 @app.post("/api/render")
 def render_report(
     report: Report,

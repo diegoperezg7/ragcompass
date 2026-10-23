@@ -132,8 +132,8 @@ overlap each other (fixed and recursive with overlap). `issues[].kind` is one of
 ## Benchmark
 
 Measures retrieval quality of the recommended chunking against the next candidates by damage, with BM25, dense
-embeddings (local, via fastembed) and hybrid (reciprocal rank fusion). Without the `bench` extra only BM25 runs and
-`warnings` says so.
+embeddings (local, via fastembed) and hybrid (reciprocal rank fusion). Without the `bench` extra only BM25 runs,
+`warnings` says so and the hybrid decision stays rule-based.
 
 Queries are generated deterministically from the corpus with `seed`: keyphrases or template questions drawn from a
 source sentence or table row. The ground truth is the character span of that source, so chunkings of different
@@ -141,8 +141,14 @@ shapes are judged on the same targets: a retrieved chunk is relevant when it ove
 
 ### `POST /api/report/{report_id}/bench`
 
-Query: `queries=60` (number of queries), `seed=13`, `k=5` (cut-off of the headline metrics; curves cover 1, 3, 5, 10),
-`mode=template|llm` (`llm` asks a local Ollama model to write the questions; default `template`), `lang`.
+Query: `queries=60` (number of queries, 1..500), `seed=13`, `k` (cut-off of the headline metrics, 1..10, default the
+recommended top-k; curves cover 1, 3, 5, 10), `mode=template|llm` (`llm` asks a local Ollama model to write the
+questions; default `template`), `dense=true` (set `false` for a fast BM25-only run), `lang` (language of
+`decisions[].reason`).
+
+Dense model: `BAAI/bge-small-en-v1.5` for English-only corpora, `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`
+otherwise (fastembed does not package multilingual-e5-small). Template queries reuse words of their source and favour
+BM25; `warnings` says so, and `mode=llm` gives paraphrased questions.
 Runs synchronously and can take a few seconds (dense models load on first use). Stores the result in the report.
 
 ### `GET /api/report/{report_id}/bench`

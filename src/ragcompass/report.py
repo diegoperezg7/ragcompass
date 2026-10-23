@@ -109,8 +109,8 @@ def to_markdown(report: Report) -> str:
         f"## {t('recommendations')}",
         "",
         _md_table(
-            [t("setting"), t("value"), t("why")],
-            [[r.key, format_value(r.value, lang), r.reason] for r in report.recommendations],
+            [t("setting"), t("value"), t("basis"), t("why")],
+            [[r.key, format_value(r.value, lang), t(r.basis), r.reason] for r in report.recommendations],
         ),
         "",
         f"## {t('documents')}",
@@ -171,9 +171,104 @@ def to_markdown(report: Report) -> str:
             ],
         ),
     ]
+    if report.bench:
+        parts += ["", *bench_markdown(report)]
     if report.llm_summary:
         parts += ["", f"## {t('summary_llm')}", "", report.llm_summary]
     return "\n".join(parts) + "\n"
+
+
+def _interval(value: dict, lang: str) -> str:
+    num = Formatter(lang).format_field
+    separator = "; " if lang == "es" else ", "
+    return f"{num(round(value['mean'], 3), '')} [{num(round(value['ci'][0], 3), '')}{separator}{num(round(value['ci'][1], 3), '')}]"
+
+
+def _bench_rows(bench: dict, lang: str) -> list[list[str]]:
+    num = Formatter(lang).format_field
+    return [
+        [
+            c["label"] + (" *" if c["recommended"] else ""),
+            str(c["chunks"]),
+            _interval(c["recall_at_k"], lang),
+            _interval(c["mrr"], lang),
+            _interval(c["ndcg"], lang),
+            num(round(c["index_ms"], 1), ""),
+            num(round(c["query_ms"]["mean"], 2), ""),
+        ]
+        for c in sorted(bench["configs"], key=lambda c: -c["ndcg"]["mean"])
+    ]
+
+
+def _bench_summary(bench: dict, lang: str) -> str:
+    return label(
+        "bench_summary",
+        lang,
+        queries=bench["queries"],
+        mode=bench["mode"],
+        seed=bench["seed"],
+        k=bench["k"],
+        retrievers=", ".join(bench["retrievers"]),
+        model=bench["dense_model"] or "-",
+    )
+
+
+def bench_markdown(report: Report) -> list[str]:
+    lang, bench = report.lang, report.bench
+    k = bench["k"]
+    headers = [
+        label("config", lang),
+        label("chunks", lang),
+        label("recall_k", lang, k=k),
+        label("mrr", lang),
+        label("ndcg_k", lang, k=k),
+        label("index_ms", lang),
+        label("query_ms", lang),
+    ]
+    lines = [f"## {label('benchmark', lang)}", "", _bench_summary(bench, lang), ""]
+    lines += [_md_table(headers, _bench_rows(bench, lang)), ""]
+    lines += [f"### {label('decisions', lang)}", ""]
+    for d in bench["decisions"]:
+        state = label("changed" if d["changed"] else "confirmed", lang)
+        lines.append(
+            f"- **{d['key']}** ({label(d['basis'], lang)}, {state}): {d['reason_i18n'].get(lang, d['reason'])}"
+        )
+    for warning in bench["warnings"]:
+        lines.append(f"- {label('warning', lang)}: {warning}")
+    return lines
+
+
+def render_bench(report: Report, console: Console) -> None:
+    lang, bench = report.lang, report.bench
+    k = bench["k"]
+    table = Table(box=None, header_style="bold", pad_edge=False)
+    headers = [
+        label("config", lang),
+        label("chunks", lang),
+        label("recall_k", lang, k=k),
+        label("mrr", lang),
+        label("ndcg_k", lang, k=k),
+        label("index_ms", lang),
+        label("query_ms", lang),
+    ]
+    for i, header in enumerate(headers):
+        table.add_column(header, justify="left" if i == 0 else "right")
+    for row in _bench_rows(bench, lang):
+        table.add_row(*row, style=f"bold {ACCENT}" if row[0].startswith(bench["winner"]["label"]) else "")
+    decisions = Table(box=None, show_header=False, pad_edge=False, expand=True)
+    decisions.add_column(style=ACCENT, no_wrap=True)
+    decisions.add_column(style="bold", no_wrap=True)
+    decisions.add_column(style="dim", ratio=1)
+    for d in bench["decisions"]:
+        state = label("changed" if d["changed"] else "confirmed", lang)
+        decisions.add_row(
+            d["key"], f"{label(d['basis'], lang)}, {state}", d["reason_i18n"].get(lang, d["reason"])
+        )
+    body = [Text(_bench_summary(bench, lang), style="dim"), table, Text(""), decisions]
+    body += [Text(f"{label('warning', lang)}: {w}", style="yellow") for w in bench["warnings"]]
+    console.print(
+        Panel(Group(*body), title=label("benchmark", lang), title_align="left", border_style=ACCENT)
+    )
 
 
 def render(report: Report, console: Console | None = None, verbose: bool = False) -> None:
@@ -211,9 +306,10 @@ def render(report: Report, console: Console | None = None, verbose: bool = False
     recs = Table(box=None, header_style="bold", show_lines=False, expand=True, pad_edge=False)
     recs.add_column(t("setting"), style=ACCENT, no_wrap=True)
     recs.add_column(t("value"), style="bold", max_width=34)
+    recs.add_column(t("basis"), no_wrap=True)
     recs.add_column(t("why"), style="dim", ratio=1)
     for r in report.recommendations:
-        recs.add_row(r.key, format_value(r.value, lang), r.reason)
+        recs.add_row(r.key, format_value(r.value, lang), t(r.basis), r.reason)
 
     sims = Table(box=None, header_style="bold", pad_edge=False)
     for key in SIMULATION_KEYS + METRIC_KEYS:
@@ -255,6 +351,8 @@ def render(report: Report, console: Console | None = None, verbose: bool = False
     console.print(Panel(sims, title=t("simulation_short"), title_align="left", border_style="grey35"))
     console.print(Panel(recs, title=t("recommendations"), title_align="left", border_style=ACCENT))
     console.print(Panel(Group(index), title=t("index"), title_align="left", border_style="grey35"))
+    if report.bench:
+        render_bench(report, console)
     if report.llm_summary:
         console.print(
             Panel(report.llm_summary, title=t("summary_llm"), title_align="left", border_style="grey35")

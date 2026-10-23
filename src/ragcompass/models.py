@@ -198,3 +198,67 @@ class ChunkExplorer(BaseModel):
     blocks: list[BlockView]
     chunks: list[ChunkView]
     metrics: SimulationResult  # the simulation metrics for this file alone
+
+
+class Interval(BaseModel):
+    mean: float
+    ci: list[float]  # [low, high], 95% bootstrap percentile interval
+
+
+class BenchConfig(BaseModel):
+    label: str
+    group: str
+    strategy: str
+    size: int
+    overlap: int
+    retriever: str  # bm25, dense or hybrid
+    recommended: bool  # chunking equal to the rule-based recommendation
+    chunks: int
+    recall_at_k: Interval
+    mrr: Interval
+    ndcg: Interval
+    curves: dict[str, dict[str, float]]  # {"recall": {"1": ..., "3": ..., "5": ..., "10": ...}}
+    index_ms: float
+    query_ms: dict[str, float]  # mean and p95
+
+
+class BenchWinner(BaseModel):
+    label: str
+    runner_up: str | None = None
+    significant: bool = False
+    margin: Interval | None = None  # winner minus runner-up on the primary metric, paired bootstrap
+
+
+class BenchDecision(BaseModel):
+    key: str
+    basis: str  # measured or rule-based
+    rule_value: Any
+    measured_value: Any
+    changed: bool
+    reason: str
+    reason_i18n: dict[str, str]
+    reason_parts: list[ReasonPart]
+
+
+class BenchQuery(BaseModel):
+    id: str
+    text: str
+    file: str
+    start: int  # UTF-16 offsets into the canonical text of the file
+    end: int
+
+
+class BenchResult(BaseModel):
+    k: int
+    seed: int
+    queries: int
+    mode: str  # template or llm
+    retrievers: list[str]
+    dense_model: str | None
+    warnings: list[str]
+    primary_metric: str = "ndcg"
+    configs: list[BenchConfig]
+    winner: BenchWinner
+    decisions: list[BenchDecision]
+    sample_queries: list[BenchQuery]
+    elapsed_ms: float
