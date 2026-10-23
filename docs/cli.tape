@@ -1,8 +1,8 @@
 # Records docs/assets/cli.gif. Run from the repository root: vhs docs/cli.tape
 Output docs/assets/cli.gif
 Set Shell zsh
-Set FontSize 15
-Set Width 1480
+Set FontSize 14
+Set Width 1860
 Set Height 1000
 Set Padding 24
 Set Theme "Catppuccin Mocha"

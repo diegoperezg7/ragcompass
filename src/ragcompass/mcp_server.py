@@ -7,6 +7,7 @@ directory by default, or the folders given with ``--root`` / ``RAGCOMPASS_MCP_RO
 from __future__ import annotations
 
 import os
+import sys
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -49,11 +50,14 @@ class Workspace:
         return target
 
     def analysis(self, path: str, fresh: bool = False) -> Analysis:
+        """A cached analysis, or with ``fresh`` a new one that is not cached, for callers that change it."""
         target = self.resolve(path)
+        if fresh:
+            return run_analysis(target)
         signature = tuple((str(f), f.stat().st_mtime_ns, f.stat().st_size) for f in iter_files(target))
         key = (str(target), signature)
         with self._lock:
-            if not fresh and key in self._cache:
+            if key in self._cache:
                 self._cache.move_to_end(key)
                 return self._cache[key]
         analysis = run_analysis(target)
@@ -173,6 +177,12 @@ def serve(
     transport: str = "stdio", host: str = "127.0.0.1", port: int = 8461, roots: list[Path] | None = None
 ) -> None:
     server = build_server(Workspace(roots))
+    if transport != "stdio" and host not in ("127.0.0.1", "localhost", "::1"):
+        print(
+            f"warning: the MCP server has no authentication and reads local files; it is listening on {host}. "
+            "Keep it on 127.0.0.1 or behind an authenticating proxy.",
+            file=sys.stderr,
+        )
     if transport == "stdio":
         server.run("stdio")
     else:

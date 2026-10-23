@@ -141,8 +141,9 @@ embeddings (local, via fastembed) and hybrid (reciprocal rank fusion). Without t
 Queries are generated deterministically from the corpus with `seed`, in equal thirds of three kinds drawn from a
 source sentence or table row: `keyphrase` (5-8 content words), `masked` (the same minus the rarest 40% of words,
 codes and numbers first, which are what makes lexical matching easy) and `question` (masked words in a question
-template). `lexical_overlap` is the IDF-weighted share of each source's vocabulary that its query repeats; above 0.5
-`warnings` flags that the benchmark favours BM25. Synthetic queries are an approximation: `mode=llm` or a query file
+template). `lexical_overlap` is the IDF-weighted share of each query's own words (function words and template words left out)
+that are copied from its source; at 0.6 or more `warnings` flags it and BM25 alone cannot be chosen as the
+retriever, because it wins by construction. Synthetic queries are an approximation: `mode=llm` or a query file
 measure more reliably, and the web should say so when `mode` is not `file`. The ground truth is the character span of that source, so chunkings of different
 shapes are judged on the same targets: a retrieved chunk is relevant when it overlaps the span.
 
@@ -174,6 +175,8 @@ The last result, or 404 if no benchmark has run.
   "lexical_overlap": { "mean": 0.298, "by_kind": { "keyphrase": 0.391, "masked": 0.216, "question": 0.288 } },
   "retrievers": ["bm25", "dense", "hybrid"],  // what could run
   "dense_model": "BAAI/bge-small-en-v1.5",    // null without the extra
+  "dense_max_tokens": 512,                     // tokens per pass; longer chunks are embedded in windows and averaged
+  "budget_tokens": 1024,                       // context budget of recall_at_budget
   "warnings": [],
   "primary_metric": "ndcg",                    // ranking metric for the winner, at k
   "configs": [ {
@@ -184,6 +187,7 @@ The last result, or 404 if no benchmark has run.
       "recommended": true,                     // chunking equal to the rule-based recommendation
       "chunks": 28,
       "recall_at_k": { "mean": 0.92, "ci": [0.86, 0.97] },
+      "recall_at_budget": { "mean": 0.95, "ci": [0.88, 1.0] },   // span recall within budget_tokens of context
       "mrr":         { "mean": 0.81, "ci": [0.73, 0.88] },
       "ndcg":        { "mean": 0.84, "ci": [0.77, 0.90] },
       "curves": { "recall": { "1": 0.70, "3": 0.88, "5": 0.92, "10": 0.97 } },
@@ -194,7 +198,7 @@ The last result, or 404 if no benchmark has run.
               "significant": true, "margin": { "mean": 0.06, "ci": [0.02, 0.10] } },
   "decisions": [ {
       "key": "chunking.documents",             // also retrieval.retriever and retrieval.top_k
-      "basis": "measured",                     // "rule-based" when the benchmark could not decide
+      "basis": "measured",                     // "rule-based" when no option wins significantly, or nothing could be measured
       "rule_value": { "strategy": "heading", "size": 256, "overlap": 0 },
       "measured_value": { "strategy": "heading", "size": 256, "overlap": 0 },
       "changed": false,
@@ -207,8 +211,17 @@ The last result, or 404 if no benchmark has run.
 
 Intervals are 95% percentile bootstrap intervals over queries (paired across configs for `winner.margin`), with the
 same `seed`. `recall_at_k` is span recall: the share of the source span covered by the top-k chunks. `ndcg` uses
-graded gains, the share of the span each chunk covers. `mrr` is the reciprocal rank of the first overlapping chunk.
+as gain the share of the span a chunk newly covers (duplicates add nothing and cost nothing; a first chunk that
+contains the whole span scores 1). `mrr` is the reciprocal rank of the first overlapping chunk.
 `sample_queries[].start/end` are UTF-16 offsets into the `text` of that file in the chunk explorer.
+
+Decisions: chunking on `recall_at_budget` (Bonferroni-adjusted for the number of candidates), retriever on `ndcg`
+among bm25, dense and hybrid (never an option that loses significantly to the best; BM25 alone not eligible when
+`lexical_overlap.mean >= 0.6`), top-k as the smallest k reaching 95% of recall@10, up or down. `query_ms` includes
+the query embedding for dense and hybrid; `index_ms` is measured after a warm-up and without cache.
+
+A run longer than `RAGCOMPASS_BENCH_TIMEOUT` seconds (600 by default) returns 422 with the reason; dense indexing is
+skipped (with a warning) above 20,000 chunks per configuration.
 
 ## Export
 

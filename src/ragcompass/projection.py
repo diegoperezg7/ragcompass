@@ -22,6 +22,7 @@ MAX_POINTS = 2000
 QUERIES = 20
 NEIGHBORS = 5
 PREVIEW = 160
+FLAT_VARIANCE = 1e-6  # share of variance below which the second axis is noise
 
 
 def _pca(matrix):
@@ -85,6 +86,11 @@ def project(
     embedder = embeddings.get_embedder(embeddings.model_for(_languages(analysis)))
     vectors = embedder.embed([c.text for c in chunks])
     coords, centre, components, explained = _pca(vectors)
+    if explained[1] < FLAT_VARIANCE:
+        # Nothing meaningful on the second axis (one point, or all points on a line): draw it flat
+        # instead of stretching numerical noise to the full height.
+        coords[:, 1] = 0.0
+        components[1] = 0.0
     scale = np.abs(coords).max(axis=0)
     scale[scale == 0] = 1.0
     coords = coords / scale

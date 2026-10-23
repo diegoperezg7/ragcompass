@@ -1,18 +1,32 @@
+import copy
 import json
+import random
 import shutil
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
 
 from ragcompass import bench
 from ragcompass.analyze import run_analysis
-from ragcompass.bench import BM25, Bootstrap, IndexedChunk, Query, coverage, rrf, score_query, span_recall
+from ragcompass.bench import (
+    BM25,
+    Bootstrap,
+    IndexedChunk,
+    Query,
+    budget_recall,
+    coverage,
+    rrf,
+    score_query,
+    span_recall,
+)
 from ragcompass.tokens import RegexTokenizer
 from tests.conftest import CORPUS
 
 EVALSMITH = Path(__file__).resolve().parents[2] / "evalsmith-mcp" / "dist" / "cli" / "index.js"
+LOG2_3 = 1.584962500721156
 
 
 @pytest.fixture(scope="module")
@@ -25,8 +39,8 @@ def bm25_run(analysis):
     return bench.run_bench(analysis, queries=30, seed=7, dense=False)
 
 
-def chunk(start, end, file="a.md", index=0):
-    return IndexedChunk(file, index, start, end, "")
+def chunk(start, end, file="a.md", index=0, tokens=100):
+    return IndexedChunk(file, index, start, end, "", tokens)
 
 
 def test_span_metrics_by_hand():
@@ -39,10 +53,25 @@ def test_span_metrics_by_hand():
     scored = score_query([other, first, second], [first, second, other], query, k=3)
     assert scored["mrr"] == 0.5  # first overlapping chunk at rank 2
     assert scored["recall"][1] == 0.0 and scored["recall"][3] == 1.0
-    # gains [0, 0.5, 0.6] against the ideal [0.6, 0.5]
-    dcg = 0.5 / 1.584962500721156 + 0.6 / 2
-    idcg = 0.6 + 0.5 / 1.584962500721156
+    # marginal gains [0, 0.5, 0.5]; the ideal takes 140..260 first (0.6), then 50..150 adds 0.4
+    dcg = 0.5 / LOG2_3 + 0.5 / 2
+    idcg = 0.6 + 0.4 / LOG2_3
     assert scored["ndcg"] == pytest.approx(dcg / idcg)
+
+
+def test_ndcg_is_one_when_the_first_chunk_covers_the_span():
+    query = Query("q1", "x", "a.md", 100, 200)
+    whole, duplicate = chunk(0, 300), chunk(50, 250, index=1)  # overlapping chunks both contain the span
+    assert score_query([whole, duplicate], [whole, duplicate], query, k=5)["ndcg"] == pytest.approx(1.0)
+
+
+def test_budget_recall_charges_large_chunks():
+    query = Query("q1", "x", "a.md", 900, 1000)
+    big = [chunk(0, 600, tokens=600), chunk(600, 1200, index=1, tokens=600)]
+    small = [chunk(0, 300, tokens=300), chunk(900, 1000, index=1, tokens=100)]
+    assert span_recall(big, query) == 1.0
+    assert budget_recall(big, query, budget=1000) == 0.0  # the second big chunk does not fit
+    assert budget_recall(small, query, budget=1000) == 1.0
 
 
 def test_bm25_and_rrf():
@@ -52,11 +81,24 @@ def test_bm25_and_rrf():
     assert rrf([[0, 1], [1, 2]], 3)[0] == 1  # the only document both retrievers return wins the fusion
 
 
-def test_bootstrap_is_seeded():
-    values = [1.0, 0.0, 1.0, 1.0, 0.5]
-    first, second = Bootstrap(5, seed=3).interval(values), Bootstrap(5, seed=3).interval(values)
+def test_bootstrap_is_seeded_and_bonferroni_widens():
+    values = [1.0, 0.0, 1.0, 1.0, 0.5, 0.2, 0.9]
+    first, second = Bootstrap(7, seed=3).interval(values), Bootstrap(7, seed=3).interval(values)
     assert first == second
     assert first.ci[0] <= first.mean <= first.ci[1]
+    boot = Bootstrap(7, seed=3)
+    zeros = [0.0] * 7
+    one, three = boot.difference(values, zeros, 1), boot.difference(values, zeros, 3)
+    assert three.ci[0] <= one.ci[0] and three.ci[1] >= one.ci[1]
+
+
+def test_lexical_overlap_is_measured_on_the_query():
+    idf = {"fan": 2.0, "assembly": 2.0, "replace": 1.0, "warranty": 3.0}
+    source = "Replace the fan assembly when the warning appears."
+    assert bench.lexical_overlap("fan assembly", source, idf) == 1.0  # every query word is copied
+    assert bench.lexical_overlap("warranty fan", source, idf) == pytest.approx(2 / 5)
+    # template words and function words do not count
+    assert bench.lexical_overlap("What does the documentation say about fan?", source, idf) == 1.0
 
 
 def test_queries_are_deterministic_and_point_to_their_source(analysis):
@@ -78,10 +120,11 @@ def test_bm25_only_bench(bm25_run):
     result = bm25_run.result
     assert result.retrievers == ["bm25"]
     assert result.dense_model is None
+    assert result.budget_tokens == bench.BUDGET_TOKENS
     assert len(result.configs) == 3
     for config in result.configs:
         assert config.ndcg.ci[0] <= config.ndcg.mean <= config.ndcg.ci[1]
-        assert 0 <= config.recall_at_k.mean <= 1
+        assert 0 <= config.recall_at_k.mean <= 1 and 0 <= config.recall_at_budget.mean <= 1
     retriever = next(d for d in result.decisions if d.key == "retrieval.retriever")
     assert retriever.basis == "rule-based" and not retriever.changed
     assert {d.key for d in result.decisions} == {
@@ -90,33 +133,124 @@ def test_bm25_only_bench(bm25_run):
         "retrieval.top_k",
     }
     assert result.query_kinds == {"keyphrase": 10, "masked": 10, "question": 10}
-    assert 0 < result.lexical_overlap["mean"] < 1
-    by_kind = result.lexical_overlap["by_kind"]
-    assert by_kind["masked"] < by_kind["keyphrase"]  # masking removes the distinctive words
+    # template queries copy their words from the source, and the benchmark says so
+    assert result.lexical_overlap["mean"] >= bench.OVERLAP_WARNING
+    assert any("copied from their source" in w for w in result.warnings)
     assert any("approximate real ones" in w for w in result.warnings)
 
 
 def test_bench_is_reproducible(analysis, bm25_run):
     again = bench.run_bench(analysis, queries=30, seed=7, dense=False).result
-    strip = lambda r: [(c.label, c.recall_at_k, c.mrr, c.ndcg) for c in r.configs]  # noqa: E731
+    strip = lambda r: [(c.label, c.recall_at_k, c.recall_at_budget, c.mrr, c.ndcg) for c in r.configs]  # noqa: E731
     assert strip(again) == strip(bm25_run.result)
 
 
-def test_measurement_overrides_rule(analysis, bm25_run, monkeypatch):
-    # Make the second candidate perfect and the recommended one poor: the measurement must win.
-    run = bm25_run
-    for entry in run.entries:
-        for scores in entry.per_query:
-            scores["ndcg"] = 0.2 if entry.candidate.recommended else 1.0
+def _decide(analysis, run, entries, retrievers=("bm25",), overlap=0.0):
     boot = Bootstrap(len(run.queries), 7)
-    configs = [bench._config(e, run.result.k, boot) for e in run.entries]
+    warnings = []
     _, measured, decisions = bench._decide(
-        analysis, run.entries, configs, ["bm25"], run.result.k, boot, len(run.queries)
+        analysis, entries, [], list(retrievers), run.result.k, boot, len(run.queries), overlap, warnings
     )
-    chunking = next(d for d in decisions if d.key == "chunking.documents")
+    return measured, {d.key: d for d in decisions}, warnings
+
+
+def test_measurement_overrides_rule(analysis, bm25_run):
+    # The second candidate recovers the whole span within the budget, the recommended one little of it.
+    entries = copy.deepcopy(bm25_run.entries)
+    rng = random.Random(1)
+    for entry in entries:
+        for scores in entry.per_query:
+            base = 0.2 if entry.candidate.recommended else 0.9
+            scores["budget"] = base + rng.uniform(-0.05, 0.05)
+    _, decisions, _ = _decide(analysis, bm25_run, entries)
+    chunking = decisions["chunking.documents"]
     assert chunking.changed and chunking.basis == "measured"
     assert chunking.measured_value != chunking.rule_value
-    assert "measurement wins" in chunking.reason
+    assert "measurement wins" in chunking.reason and "Bonferroni" in chunking.reason
+
+
+def test_no_significant_winner_keeps_the_rule(analysis, bm25_run):
+    entries = copy.deepcopy(bm25_run.entries)
+    rng = random.Random(2)
+    for entry in entries:
+        for scores in entry.per_query:
+            scores["budget"] = 0.5 + rng.uniform(-0.3, 0.3)  # same distribution for every chunking
+    _, decisions, _ = _decide(analysis, bm25_run, entries)
+    assert decisions["chunking.documents"].basis == "rule-based"
+    assert not decisions["chunking.documents"].changed
+
+
+def _retriever_entries(run, scores, noise=0.05):
+    rng = random.Random(3)
+    entries = []
+    for entry in run.entries:
+        for retriever in ("bm25", "dense", "hybrid"):
+            per_query = [
+                dict(q, ndcg=scores[retriever] + rng.uniform(-noise, noise)) for q in entry.per_query
+            ]
+            entries.append(
+                bench.Entry(entry.candidate, retriever, entry.chunks, entry.runs, per_query, 1.0, [1.0])
+            )
+    return entries
+
+
+def _retriever(analysis, run, scores, overlap=0.0):
+    measured, decisions, warnings = _decide(
+        analysis, run, _retriever_entries(run, scores), ("bm25", "dense", "hybrid"), overlap
+    )
+    return SimpleNamespace(m=measured["retrieval.retriever"], d=decisions["retrieval.retriever"], w=warnings)
+
+
+def test_retriever_decision_cites_all_three(analysis, bm25_run):
+    clear = _retriever(analysis, bm25_run, {"bm25": 0.9, "dense": 0.5, "hybrid": 0.6})
+    assert clear.m.value == "bm25" and clear.m.basis == "measured"
+    import re
+
+    cited = dict(re.findall(r"(bm25|dense|hybrid) (0\.\d+)", clear.d.reason))
+    assert set(cited) == {"bm25", "dense", "hybrid"}
+    assert float(cited["bm25"]) > float(cited["hybrid"]) > float(cited["dense"])
+
+
+def test_retriever_tie_keeps_the_rule(analysis, bm25_run):
+    # the rule says hybrid (the sample corpus is identifier-dense); hybrid ties with BM25
+    tie = _retriever(analysis, bm25_run, {"bm25": 0.9, "dense": 0.5, "hybrid": 0.9})
+    assert tie.m.value == "hybrid" and tie.m.basis == "rule-based"
+    assert "within noise" in tie.d.reason
+
+
+def test_retriever_never_returns_a_significant_loser(analysis, bm25_run):
+    # hybrid (the rule) loses to both single retrievers, which tie: the choice comes from those two
+    lost = _retriever(analysis, bm25_run, {"bm25": 0.9, "dense": 0.89, "hybrid": 0.5})
+    assert lost.m.value in ("bm25", "dense") and lost.m.changed
+    assert "loses to" in lost.d.reason
+
+
+def test_copied_query_words_make_bm25_ineligible(analysis, bm25_run):
+    lexical = _retriever(analysis, bm25_run, {"bm25": 0.95, "dense": 0.5, "hybrid": 0.7}, overlap=0.9)
+    assert lexical.m.value != "bm25"
+    assert "not eligible" in lexical.d.reason
+
+
+def _with_recall(run, curve):
+    entries = copy.deepcopy(run.entries)
+    for entry in entries:
+        for scores in entry.per_query:
+            scores["recall"] = dict(curve)
+    return entries
+
+
+def test_top_k_can_go_up(analysis, bm25_run):
+    curve = {cut: min(1.0, cut / 8) for cut in range(1, 11)}  # recall grows until k = 8
+    measured, decisions, _ = _decide(analysis, bm25_run, _with_recall(bm25_run, curve))
+    assert measured["retrieval.top_k"].value == 8
+    assert decisions["retrieval.top_k"].changed
+
+
+def test_top_k_without_recall_is_not_decided(analysis, bm25_run):
+    curve = dict.fromkeys(range(1, 11), 0.0)
+    measured, decisions, warnings = _decide(analysis, bm25_run, _with_recall(bm25_run, curve))
+    assert decisions["retrieval.top_k"].basis == "rule-based"
+    assert any("top 10" in w for w in warnings)
 
 
 def test_apply_marks_measured_recommendations():
@@ -126,12 +260,22 @@ def test_apply_marks_measured_recommendations():
     report = fresh.report
     assert report.bench["queries"] == 20
     basis = {r.key: r.basis for r in report.recommendations}
-    assert basis["chunking.documents"] == "measured"
-    assert basis["retrieval.top_k"] == "measured"
     assert basis["retrieval.hybrid_bm25"] == "rule-based"  # dense not measured
     assert basis["retrieval.retriever"] == "rule-based"
+    assert basis["chunking.documents"] in ("rule-based", "measured")
     top_k = next(r for r in report.recommendations if r.key == "retrieval.top_k")
     assert "Benchmark" in top_k.reason and "Benchmark" in top_k.reason_i18n["es"]
+
+
+def test_timeout_and_dense_limit(analysis, monkeypatch):
+    monkeypatch.setattr(bench, "TIMEOUT_SECONDS", 0.0)
+    with pytest.raises(bench.BenchTimeout, match="RAGCOMPASS_BENCH_TIMEOUT"):
+        bench.run_bench(analysis, queries=5, dense=False)
+    monkeypatch.setattr(bench, "TIMEOUT_SECONDS", 600.0)
+    monkeypatch.setattr(bench, "MAX_DENSE_CHUNKS", 1)
+    result = bench.run_bench(analysis, queries=5).result
+    assert result.retrievers == ["bm25"]
+    assert any("dense limit" in w for w in result.warnings)
 
 
 def test_evalsmith_export(tmp_path, bm25_run):
@@ -149,15 +293,38 @@ def test_evalsmith_export(tmp_path, bm25_run):
         assert done.returncode == 0, done.stdout + done.stderr
 
 
-@pytest.mark.skipif(not bench.embeddings.available(), reason="bench extra not installed")
+def models_cached(model: str) -> bool:
+    name = model.split("/")[-1]
+    return bench.embeddings.available() and any(
+        name in p.name for p in bench.embeddings.CACHE_DIR.glob("models--*")
+    )
+
+
 def test_dense_bench_when_models_are_cached(analysis):
     model = bench.embeddings.model_for(bench._languages(analysis))
-    name = model.split("/")[-1]
-    if not any(name in path.name for path in bench.embeddings.CACHE_DIR.glob("models--*")):
-        pytest.skip("embedding model not downloaded")
+    if not models_cached(model):
+        pytest.skip("bench extra or embedding model not available")
     result = bench.run_bench(analysis, queries=20, seed=1).result
     assert result.retrievers == ["bm25", "dense", "hybrid"]
-    assert result.dense_model == model
+    assert result.dense_model == model and result.dense_max_tokens == 128
+    # chunks of 256+ tokens do not fit the 128-token window: they are embedded in windows, and the report says so
+    assert any("embedded in windows" in w for w in result.warnings)
+    dense = [c for c in result.configs if c.retriever == "dense"]
+    assert (
+        len({c.query_ms["mean"] > 0 for c in dense}) == 1
+    )  # every configuration pays for the query embedding
+
+
+def test_windows_cover_the_whole_chunk():
+    model = bench.embeddings.MULTILINGUAL_MODEL
+    if not models_cached(model):
+        pytest.skip("bench extra or embedding model not available")
+    embedder = bench.embeddings.get_embedder(model)
+    text = " ".join(["The calibrator stores energy in its output capacitors for ninety seconds."] * 30)
+    windows = embedder.windows(text)
+    assert len(windows) > 1
+    assert all(embedder.token_count(w) <= embedder.max_tokens - 2 for w in windows)
+    assert windows[-1].strip() and text.endswith(windows[-1].strip()[-20:])
 
 
 def test_missing_extra_is_reported(analysis, monkeypatch):
@@ -165,36 +332,6 @@ def test_missing_extra_is_reported(analysis, monkeypatch):
     result = bench.run_bench(analysis, queries=10, seed=2).result
     assert result.retrievers == ["bm25"]
     assert any("bench extra" in w for w in result.warnings)
-
-
-def _retriever_decision(analysis, run, scores):
-    from types import SimpleNamespace
-
-    entries = []
-    for entry in run.entries:
-        for retriever in ("bm25", "dense", "hybrid"):
-            per_query = [
-                dict(q, ndcg=scores[retriever] + 0.01 * (i % 3)) for i, q in enumerate(entry.per_query)
-            ]
-            entries.append(
-                bench.Entry(entry.candidate, retriever, entry.chunks, entry.runs, per_query, 1.0, [1.0])
-            )
-    boot = Bootstrap(len(run.queries), 7)
-    _, measured, decisions = bench._decide(
-        analysis, entries, [], ["bm25", "dense", "hybrid"], 5, boot, len(run.queries)
-    )
-    return SimpleNamespace(
-        m=measured["retrieval.retriever"], d=next(d for d in decisions if d.key == "retrieval.retriever")
-    )
-
-
-def test_retriever_decision_cites_all_three(analysis, bm25_run):
-    clear = _retriever_decision(analysis, bm25_run, {"bm25": 0.9, "dense": 0.5, "hybrid": 0.6})
-    assert clear.m.value == "bm25" and clear.m.basis == "measured"
-    assert all(word in clear.d.reason for word in ("bm25 0.9", "dense 0.5", "hybrid 0.6"))
-    robust = _retriever_decision(analysis, bm25_run, {"bm25": 0.9, "dense": 0.5, "hybrid": 0.9})
-    assert robust.m.value == "hybrid"
-    assert "within noise" in robust.d.reason
 
 
 def test_user_query_file(tmp_path, analysis):

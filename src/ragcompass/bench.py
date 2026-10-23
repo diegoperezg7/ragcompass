@@ -4,11 +4,14 @@ Queries are generated from source sentences and table rows with a fixed seed; th
 truth is the character span of the source. A retrieved chunk is relevant when it overlaps
 that span, so chunkings of different shapes are judged on the same targets.
 
-Metrics, per query, at cut-off k:
+Metrics, per query:
 
 - recall@k: share of the source span covered by the union of the top-k chunks;
+- recall within a token budget: the same, keeping ranked chunks only while they fit in
+  ``BUDGET_TOKENS`` of context, which charges large chunks for the room they take;
 - MRR: reciprocal rank of the first chunk that overlaps the span (0 if none in the top 10);
-- nDCG@k: graded gains, the share of the span each chunk covers, against the best possible order.
+- nDCG@k: gains are the share of the span a chunk newly covers, so a chunk repeating text
+  already retrieved neither helps nor hurts; the ideal is the best achievable coverage order.
 """
 
 from __future__ import annotations
@@ -52,6 +55,9 @@ RRF_K = 60  # reciprocal rank fusion constant, as in the original RRF paper
 RRF_DEPTH = 100
 MIN_SENTENCE_WORDS = 8
 TOP_K_RECALL_SHARE = 0.95  # smallest k that keeps 95% of recall@10 is enough
+BUDGET_TOKENS = 1024  # context budget for the token-efficiency metric: what fits a tight prompt
+MAX_DENSE_CHUNKS = 20_000  # above this per configuration, dense indexing is skipped with a warning
+TIMEOUT_SECONDS = float(__import__("os").environ.get("RAGCOMPASS_BENCH_TIMEOUT", "600"))
 WORD = re.compile(r"[^\W_]+(?:[-'][^\W_]+)*", re.UNICODE)
 TERM = re.compile(r"\w+", re.UNICODE)
 SENTENCE = re.compile(r"\S[^.!?]*(?:[.!?]+|$)")
@@ -80,6 +86,7 @@ class IndexedChunk:
     start: int
     end: int
     text: str
+    tokens: int = 0
 
     @property
     def doc_id(self) -> str:
@@ -175,7 +182,8 @@ def build_chunks(analysis: Analysis, candidate: Candidate) -> list[IndexedChunk]
         layout = doc.layout
         for i, chunk in enumerate(chunk_doc(doc, group, strategy, size, overlap)):
             text = _header_prefix(layout, chunk) + layout.text[chunk.start : chunk.end]
-            out.append(IndexedChunk(doc.path, i, chunk.start, chunk.end, text))
+            tokens = layout.tokens.count(chunk.start, chunk.end) + chunk.extra_tokens
+            out.append(IndexedChunk(doc.path, i, chunk.start, chunk.end, text, tokens))
     return out
 
 
@@ -219,7 +227,9 @@ def _units(analysis: Analysis) -> list[Unit]:
 
 QUERY_KINDS = ("keyphrase", "masked", "question")
 MASK_SHARE = 0.4  # share of the rarest words removed from masked queries
-OVERLAP_WARNING = 0.5
+# Above this share of copied words, a benchmark cannot tell lexical from semantic retrieval
+# apart: BM25 wins by construction. Template queries sit near 1, paraphrases well below 0.5.
+OVERLAP_WARNING = 0.6
 
 
 # Function words that the language-detection lists leave out but that make poor query terms.
@@ -285,12 +295,25 @@ def _template_query(unit: Unit, rng: random.Random, idf: dict[str, float], kind:
     return QUESTION[lang].format(masked) if kind == "question" else masked
 
 
-def lexical_overlap(query: str, source: str, idf: dict[str, float]) -> float:
-    """IDF-weighted share of the source's vocabulary that the query repeats (0 = none, 1 = all)."""
-    source_terms = set(terms(source))
-    query_terms = set(terms(query)) & source_terms
-    total = sum(idf.get(t, 0) for t in source_terms)
-    return sum(idf.get(t, 0) for t in query_terms) / total if total else 0.0
+TEMPLATE_WORDS = {
+    t for template in (*QUESTION.values(), *ROW_QUESTION.values()) for t in TERM.findall(template.lower())
+}
+
+
+def lexical_overlap(query: str, source: str, idf: dict[str, float], language: str = "en") -> float:
+    """IDF-weighted share of the query's own words that appear literally in its source.
+
+    1 means every distinctive word of the query is copied from the source (lexical matching is
+    easy); 0 means none is. Function words and the fixed words of the templates are ignored.
+    """
+    stop = STOPWORDS.get(language, STOPWORDS["en"]) | QUERY_STOPWORDS.get(language, QUERY_STOPWORDS["en"])
+    query_terms = {t for t in terms(query) if t not in stop and t not in TEMPLATE_WORDS}
+    if not query_terms:
+        return 0.0
+    ceiling = max(idf.values(), default=1.0)  # unseen words count as the rarest
+    weight = lambda t: idf.get(t, ceiling)  # noqa: E731
+    shared = query_terms & set(terms(source))
+    return sum(weight(t) for t in shared) / sum(weight(t) for t in query_terms)
 
 
 def _llm_query(unit: Unit) -> str:
@@ -409,13 +432,12 @@ class BM25:
 
 class Dense:
     def __init__(self, embedder: embeddings.Embedder, texts: list[str]) -> None:
-        self.embedder = embedder
-        self.matrix = embedder.embed(texts)
+        self.matrix = embedder.embed(texts, cache=False)  # timed: never served from the cache
 
-    def search(self, query: str, depth: int) -> list[int]:
+    def search(self, vector, depth: int) -> list[int]:
         import numpy as np
 
-        scores = self.matrix @ self.embedder.embed([query])[0]
+        scores = self.matrix @ vector
         order = np.lexsort((np.arange(len(scores)), -scores))
         return [int(i) for i in order[:depth]]
 
@@ -438,35 +460,83 @@ def coverage(chunk: IndexedChunk, query: Query) -> float:
     return max(overlap, 0) / max(query.end - query.start, 1)
 
 
+class SpanCover:
+    """Tracks which part of a query's source span the chunks seen so far already cover."""
+
+    def __init__(self, query: Query) -> None:
+        self.query = query
+        self.pieces: list[tuple[int, int]] = []
+
+    def add(self, chunk: IndexedChunk) -> float:
+        """Cover ``chunk`` and return the share of the span it newly covers."""
+        q = self.query
+        start, end = max(chunk.start, q.start), min(chunk.end, q.end)
+        if chunk.file != q.file or end <= start:
+            return 0.0
+        before = self.covered()
+        self.pieces.append((start, end))
+        return (self.covered() - before) / max(q.end - q.start, 1)
+
+    def covered(self) -> int:
+        total, reach = 0, self.query.start
+        for start, end in sorted(self.pieces):
+            start = max(start, reach)
+            if end > start:
+                total += end - start
+                reach = end
+        return total
+
+
 def span_recall(chunks: list[IndexedChunk], query: Query) -> float:
-    pieces = sorted(
-        (max(c.start, query.start), min(c.end, query.end))
-        for c in chunks
-        if c.file == query.file and min(c.end, query.end) > max(c.start, query.start)
-    )
-    covered, reach = 0, query.start
-    for start, end in pieces:
-        start = max(start, reach)
-        if end > start:
-            covered += end - start
-            reach = end
-    return covered / max(query.end - query.start, 1)
+    cover = SpanCover(query)
+    for chunk in chunks:
+        cover.add(chunk)
+    return cover.covered() / max(query.end - query.start, 1)
+
+
+def _gain_if_added(cover: SpanCover, chunk: IndexedChunk) -> float:
+    trial = SpanCover(cover.query)
+    trial.pieces = list(cover.pieces)
+    return trial.add(chunk)
+
+
+def _ideal_gains(all_chunks: list[IndexedChunk], query: Query, cut: int) -> list[float]:
+    """Greedy best order: each step takes the chunk that covers the most still-uncovered span."""
+    pool = [c for c in all_chunks if coverage(c, query) > 0]
+    cover, gains = SpanCover(query), []
+    while pool and len(gains) < cut:
+        best = max(pool, key=lambda c: (_gain_if_added(cover, c), -c.tokens))
+        pool.remove(best)
+        gain = cover.add(best)
+        if gain <= 0:
+            break
+        gains.append(gain)
+    return gains
+
+
+def budget_recall(ranked: list[IndexedChunk], query: Query, budget: int = BUDGET_TOKENS) -> float:
+    """Span recall keeping ranked chunks while they fit in ``budget`` tokens of context."""
+    kept, used = [], 0
+    for chunk in ranked:
+        if used + chunk.tokens > budget:
+            break
+        kept.append(chunk)
+        used += chunk.tokens
+    return span_recall(kept, query)
 
 
 def score_query(ranked: list[IndexedChunk], all_chunks: list[IndexedChunk], query: Query, k: int) -> dict:
-    gains = [coverage(c, query) for c in ranked]
-    first = next((i for i, g in enumerate(gains) if g > 0), None)
-    ideal = sorted((g for g in (coverage(c, query) for c in all_chunks) if g > 0), reverse=True)
-
-    def ndcg(cut: int) -> float:
-        dcg = sum(g / math.log2(i + 2) for i, g in enumerate(gains[:cut]))
-        idcg = sum(g / math.log2(i + 2) for i, g in enumerate(ideal[:cut]))
-        return dcg / idcg if idcg else 0.0
-
+    cover = SpanCover(query)
+    gains = [cover.add(c) for c in ranked]
+    first = next((i for i, c in enumerate(ranked) if coverage(c, query) > 0), None)
+    ideal = _ideal_gains(all_chunks, query, k)
+    dcg = sum(g / math.log2(i + 2) for i, g in enumerate(gains[:k]))
+    idcg = sum(g / math.log2(i + 2) for i, g in enumerate(ideal))
     return {
         "recall": {cut: span_recall(ranked[:cut], query) for cut in range(1, MAX_K + 1)},
+        "budget": budget_recall(ranked, query),
         "mrr": 1 / (first + 1) if first is not None else 0.0,
-        "ndcg": ndcg(k),
+        "ndcg": dcg / idcg if idcg else 0.0,
     }
 
 
@@ -490,16 +560,28 @@ class Bootstrap:
         rng = random.Random(seed)
         self.samples = [[rng.randrange(n) for _ in range(n)] for _ in range(samples)] if n else []
 
-    def interval(self, values: list[float]) -> Interval:
+    def interval(self, values: list[float], confidence: float = CONFIDENCE) -> Interval:
         means = [mean([values[i] for i in sample]) for sample in self.samples]
-        tail = (1 - CONFIDENCE) / 2
+        tail = (1 - confidence) / 2
         return Interval(
             mean=round(mean(values), 4),
             ci=[round(percentile(means, tail), 4), round(percentile(means, 1 - tail), 4)],
         )
 
-    def difference(self, a: list[float], b: list[float]) -> Interval:
-        return self.interval([x - y for x, y in zip(a, b, strict=True)])
+    def difference(self, a: list[float], b: list[float], comparisons: int = 1) -> Interval:
+        """Interval of a minus b, Bonferroni-adjusted for ``comparisons`` simultaneous tests."""
+        return self.interval(
+            [x - y for x, y in zip(a, b, strict=True)], 1 - (1 - CONFIDENCE) / max(comparisons, 1)
+        )
+
+
+class BenchTimeout(ValueError):
+    pass
+
+
+def adjusted_confidence(comparisons: int) -> float | int:
+    value = round(100 * (1 - (1 - CONFIDENCE) / max(comparisons, 1)), 1)
+    return int(value) if value.is_integer() else value
 
 
 # ---------------------------------------------------------------- the benchmark
@@ -566,37 +648,64 @@ def run_bench(
     if not query_list:
         raise ValueError("the corpus has no sentences or table rows to make queries from")
     idf = idf_table(_units(analysis))
+    languages = {p.path: p.language or "en" for p in analysis.report.documents}
     overlaps: dict[str, list[float]] = defaultdict(list)
     for query in query_list:
         source = analysis.docs[query.file].layout.text[query.start : query.end]
-        overlaps[query.kind].append(lexical_overlap(query.text, source, idf))
+        overlaps[query.kind].append(lexical_overlap(query.text, source, idf, languages.get(query.file, "en")))
     overlap_mean = mean([v for values in overlaps.values() for v in values])
     if mode == "template":
         warnings.append(
             "synthetic queries approximate real ones: they are built from words of their source; "
             "--queries llm (local Ollama) or --queries-file with your own questions measure more reliably"
         )
-    if overlap_mean > OVERLAP_WARNING:
+    if overlap_mean >= OVERLAP_WARNING:
         warnings.append(
-            f"queries repeat {overlap_mean:.0%} of their source's distinctive vocabulary, which favours BM25"
+            f"{overlap_mean:.0%} of the query words are copied from their source: lexical retrieval wins by "
+            "construction, so BM25 alone is never chosen on this evidence"
         )
+
+    group_candidates = candidates(analysis, group)
+    chunk_sets = {c.label: build_chunks(analysis, c) for c in group_candidates}
 
     embedder = None
     retrievers = ["bm25"]
     if dense:
-        if embeddings.available():
+        largest = max(len(chunks) for chunks in chunk_sets.values())
+        if not embeddings.available():
+            warnings.append(embeddings.INSTALL_HINT + "; only BM25 was measured")
+        elif largest > MAX_DENSE_CHUNKS:
+            warnings.append(
+                f"{largest:,} chunks exceed the dense limit of {MAX_DENSE_CHUNKS:,} per configuration; only BM25 was measured"
+            )
+        else:
             try:
                 embedder = embeddings.get_embedder(embeddings.model_for(_languages(analysis)))
+                embedder.warm_up()  # so the first configuration does not pay for loading the model
                 retrievers += ["dense", "hybrid"]
             except Exception as exc:  # model download blocked, for instance
                 warnings.append(f"dense retrieval unavailable: {exc}")
-        else:
-            warnings.append(embeddings.INSTALL_HINT + "; only BM25 was measured")
+
+    # Query vectors are computed once, and their cost is timed apart from the search itself.
+    query_vectors, embed_ms = {}, {}
+    if embedder is not None:
+        for query in query_list:
+            timer = time.perf_counter()
+            query_vectors[query.id] = embedder.embed([query.text], cache=False)[0]
+            embed_ms[query.id] = (time.perf_counter() - timer) * 1000
+
+    def check_time():
+        if time.perf_counter() - started > TIMEOUT_SECONDS:
+            raise BenchTimeout(
+                f"benchmark stopped after {TIMEOUT_SECONDS:.0f} s (RAGCOMPASS_BENCH_TIMEOUT); "
+                "use fewer queries, dense=false or a smaller corpus"
+            )
 
     boot = Bootstrap(len(query_list), seed)
     entries: list[Entry] = []
-    for candidate in candidates(analysis, group):
-        chunks = build_chunks(analysis, candidate)
+    windowed_before = embedder.windowed if embedder else 0
+    for candidate in group_candidates:
+        chunks = chunk_sets[candidate.label]
         texts = [c.text for c in chunks]
         timer = time.perf_counter()
         bm25 = BM25(texts)
@@ -607,6 +716,7 @@ def run_bench(
             dense_index = Dense(embedder, texts)
             built["dense"] = (time.perf_counter() - timer) * 1000
             built["hybrid"] = built["bm25"] + built["dense"]
+        check_time()
         for retriever in retrievers:
             runs, per_query, latency = {}, [], []
             for query in query_list:
@@ -614,18 +724,31 @@ def run_bench(
                 if retriever == "bm25":
                     ranked = bm25.search(query.text, MAX_K)
                 elif retriever == "dense":
-                    ranked = dense_index.search(query.text, MAX_K)
+                    ranked = dense_index.search(query_vectors[query.id], MAX_K)
                 else:
                     ranked = rrf(
-                        [bm25.search(query.text, RRF_DEPTH), dense_index.search(query.text, RRF_DEPTH)], MAX_K
+                        [
+                            bm25.search(query.text, RRF_DEPTH),
+                            dense_index.search(query_vectors[query.id], RRF_DEPTH),
+                        ],
+                        MAX_K,
                     )
-                latency.append((time.perf_counter() - timer) * 1000)
+                elapsed = (time.perf_counter() - timer) * 1000
+                latency.append(elapsed + (embed_ms[query.id] if retriever != "bm25" else 0.0))
                 runs[query.id] = ranked
                 per_query.append(score_query([chunks[i] for i in ranked], chunks, query, k))
             entries.append(Entry(candidate, retriever, chunks, runs, per_query, built[retriever], latency))
+            check_time()
+    if embedder is not None and embedder.windowed > windowed_before:
+        warnings.append(
+            f"the dense model reads {embedder.max_tokens} tokens per pass; "
+            f"{embedder.windowed - windowed_before} longer chunks were embedded in windows and averaged"
+        )
 
     configs = [_config(entry, k, boot) for entry in entries]
-    winner, measured, decisions = _decide(analysis, entries, configs, retrievers, k, boot, len(query_list))
+    winner, measured, decisions = _decide(
+        analysis, entries, configs, retrievers, k, boot, len(query_list), overlap_mean, warnings
+    )
     to16 = {path: utf16_offsets(doc.layout.text) for path, doc in analysis.docs.items()}
     result = BenchResult(
         k=k,
@@ -639,6 +762,8 @@ def run_bench(
         },
         retrievers=retrievers,
         dense_model=embedder.name if embedder else None,
+        dense_max_tokens=embedder.max_tokens if embedder else None,
+        budget_tokens=BUDGET_TOKENS,
         warnings=warnings,
         configs=configs,
         winner=winner,
@@ -668,6 +793,7 @@ def _config(entry: Entry, k: int, boot: Bootstrap) -> BenchConfig:
         recommended=c.recommended,
         chunks=len(entry.chunks),
         recall_at_k=boot.interval(recall),
+        recall_at_budget=boot.interval([q["budget"] for q in entry.per_query]),
         mrr=boot.interval([q["mrr"] for q in entry.per_query]),
         ndcg=boot.interval([q["ndcg"] for q in entry.per_query]),
         curves={
@@ -682,8 +808,17 @@ def _ndcg(entry: Entry) -> list[float]:
     return [q["ndcg"] for q in entry.per_query]
 
 
-def _decide(analysis, entries, configs, retrievers, k, boot, n_queries):
+def _budget(entry: Entry) -> list[float]:
+    return [q["budget"] for q in entry.per_query]
+
+
+def _r(value: float) -> float:
+    return round(value, 3)
+
+
+def _decide(analysis, entries, configs, retrievers, k, boot, n_queries, overlap=0.0, warnings=None):
     report = analysis.report
+    warnings = warnings if warnings is not None else []
     by_label = {e.label: e for e in entries}
     ordered = sorted(entries, key=lambda e: -mean(_ndcg(e)))
     best, second = ordered[0], (ordered[1] if len(ordered) > 1 else None)
@@ -717,96 +852,128 @@ def _decide(analysis, entries, configs, retrievers, k, boot, n_queries):
             )
         )
 
-    # Chunking of the main group: every chunking at its best retriever, the rule's pick against the rest.
+    # Chunking: span recall within a fixed token budget, so a chunking cannot buy recall with size.
+    # Each chunking is taken at its best retriever; the rule's pick is tested against every other
+    # candidate with Bonferroni-adjusted intervals.
     group = entries[0].candidate.group
     best_of: dict[str, Entry] = {}
     for e in entries:
         current = best_of.get(e.candidate.label)
-        if current is None or mean(_ndcg(e)) > mean(_ndcg(current)):
+        if current is None or mean(_budget(e)) > mean(_budget(current)):
             best_of[e.candidate.label] = e
     rule_entry = next(e for e in best_of.values() if e.candidate.recommended)
-    top = max(best_of.values(), key=lambda e: (mean(_ndcg(e)), e.candidate.recommended))
-    common = {"queries": n_queries, "k": k}
-    if top is not rule_entry:
-        gap = boot.difference(_ndcg(top), _ndcg(rule_entry))
+    others = [e for e in best_of.values() if e is not rule_entry]
+    comparisons = max(len(others), 1)
+    conf = adjusted_confidence(comparisons)
+    common = {"queries": n_queries, "budget": BUDGET_TOKENS, "conf": conf, "m": comparisons}
+    better = []
+    for e in others:
+        gap = boot.difference(_budget(e), _budget(rule_entry), comparisons)
         if gap.ci[0] > 0:
-            params = {
-                **common,
-                "winner": top.label,
-                "score": round(mean(_ndcg(top)), 3),
-                "rule": rule_entry.label,
-                "score_rule": round(mean(_ndcg(rule_entry)), 3),
-                "gap": round(gap.mean, 3),
-                "low": round(gap.ci[0], 3),
-                "high": round(gap.ci[1], 3),
-            }
-            m = Measured(top.candidate.value, [("bench.chunking.changed", params)], changed=True)
-            decide(f"chunking.{group}", rule_entry.candidate.value, m)
-    if f"chunking.{group}" not in measured:
-        score = boot.interval(_ndcg(rule_entry))
+            better.append((mean(_budget(e)), e, gap))
+    if better:
+        _, top, gap = max(better, key=lambda t: t[0])
+        params = {
+            **common,
+            "winner": top.label,
+            "score": _r(mean(_budget(top))),
+            "rule": rule_entry.label,
+            "score_rule": _r(mean(_budget(rule_entry))),
+            "gap": _r(gap.mean),
+            "low": _r(gap.ci[0]),
+            "high": _r(gap.ci[1]),
+        }
+        m = Measured(top.candidate.value, [("bench.chunking.changed", params)], changed=True)
+    else:
+        score = boot.interval(_budget(rule_entry))
         params = {
             **common,
             "config": rule_entry.label,
-            "score": round(score.mean, 3),
-            "low": round(score.ci[0], 3),
-            "high": round(score.ci[1], 3),
+            "score": score.mean,
+            "low": score.ci[0],
+            "high": score.ci[1],
         }
-        m = Measured(rule_entry.candidate.value, [("bench.chunking.confirmed", params)], changed=False)
-        decide(f"chunking.{group}", rule_entry.candidate.value, m)
+        params = {key: (_r(v) if isinstance(v, float) else v) for key, v in params.items()}
+        m = Measured(
+            rule_entry.candidate.value,
+            [("bench.chunking.confirmed", params)],
+            changed=False,
+            basis="rule-based",
+        )
+    decide(f"chunking.{group}", rule_entry.candidate.value, m)
     chosen = measured[f"chunking.{group}"].value
     chosen_label = f"{chosen['strategy']} {chosen['size']}/{chosen['overlap']}"
 
-    # Retriever: the three on the chosen chunking, with paired intervals.
+    # Retriever: nDCG@k of the three on the chosen chunking. An option that loses significantly to
+    # the best is never returned; with copied query words BM25 alone is not eligible.
     rule_retriever = rec("retrieval.retriever").value
     if "hybrid" in retrievers:
         options = {r: by_label[f"{chosen_label} · {r}"] for r in ("bm25", "dense", "hybrid")}
-        ranked = sorted(options, key=lambda r: -mean(_ndcg(options[r])))
-        best, second = ranked[0], ranked[1]
-        gap = boot.difference(_ndcg(options[best]), _ndcg(options[second]))
-        params = {
-            "k": k,
-            **{r: round(mean(_ndcg(e)), 3) for r, e in options.items()},
-            "best": best,
-            "second": second,
-            "gap": round(gap.mean, 3),
-            "low": round(gap.ci[0], 3),
-            "high": round(gap.ci[1], 3),
-        }
-        hybrid_gap = boot.difference(_ndcg(options["hybrid"]), _ndcg(options["bm25"]))
-        if best == "bm25" and hybrid_gap.ci[1] >= 0 and hybrid_gap.ci[0] <= 0:
-            # BM25 leads but hybrid is not measurably worse: keep dense matching for paraphrases.
-            params.update(
-                gap=round(hybrid_gap.mean, 3), low=round(hybrid_gap.ci[0], 3), high=round(hybrid_gap.ci[1], 3)
-            )
-            m = Measured("hybrid", [("bench.retriever.robust", params)], changed=rule_retriever != "hybrid")
-        elif gap.ci[0] > 0:
-            m = Measured(best, [("bench.retriever.best", params)], changed=rule_retriever != best)
+        scores = {r: _r(mean(_ndcg(e))) for r, e in options.items()}
+        lexical = overlap >= OVERLAP_WARNING
+        eligible = ["dense", "hybrid"] if lexical else list(options)
+        top = max(eligible, key=lambda r: mean(_ndcg(options[r])))
+        within = [
+            r
+            for r in eligible
+            if r == top
+            or boot.difference(_ndcg(options[top]), _ndcg(options[r]), len(eligible) - 1).ci[0] <= 0
+        ]
+        base = {"k": k, **scores, "conf": adjusted_confidence(len(eligible) - 1)}
+        parts: list[Part] = []
+        if lexical:
+            parts.append(("bench.retriever.lexical", {**base, "overlap": round(100 * overlap)}))
+        if rule_retriever in within and len(within) > 1:
+            parts.append(("bench.retriever.tie", {**base, "rule": rule_retriever, "best": top}))
+            m = Measured(rule_retriever, parts, changed=False, basis="rule-based")
+        elif within == [top]:
+            parts.append(("bench.retriever.best", {**base, "best": top}))
+            m = Measured(top, parts, changed=rule_retriever != top)
         else:
-            m = Measured(rule_retriever, [("bench.retriever.tie", params)], changed=False, basis="rule-based")
-        final = options[m.value] if m.value in options else options[best]
+            choice = "hybrid" if "hybrid" in within else top
+            gap = boot.difference(_ndcg(options[top]), _ndcg(options[rule_retriever]), len(eligible) - 1)
+            params = {
+                **base,
+                "rule": rule_retriever,
+                "best": top,
+                "choice": choice,
+                "within": ", ".join(within),
+                "gap": _r(gap.mean),
+                "low": _r(gap.ci[0]),
+                "high": _r(gap.ci[1]),
+            }
+            parts.append(("bench.retriever.excluded", params))
+            if choice != top:
+                parts.append(("bench.retriever.prefer_hybrid", {}))
+            m = Measured(choice, parts, changed=rule_retriever != choice)
+        final = options[m.value] if m.value in options else options[top]
     else:
         m = Measured(rule_retriever, [("bench.retriever.unavailable", {})], changed=False, basis="rule-based")
         final = by_label[f"{chosen_label} · bm25"]
     decide("retrieval.retriever", rule_retriever, m)
 
-    # Top-k: the smallest k that keeps most of recall@10 with the retriever that will be used.
-    entry = final
-    curve = {cut: mean([q["recall"][cut] for q in entry.per_query]) for cut in range(1, MAX_K + 1)}
+    # Top-k: the smallest k that keeps 95% of recall@10 with the retriever that will be used. It can
+    # go up or down; rules keep it under the context budget and the index size.
+    curve = {cut: mean([q["recall"][cut] for q in final.per_query]) for cut in range(1, MAX_K + 1)}
     rule_k = rec("retrieval.top_k").value["final"]
-    target = TOP_K_RECALL_SHARE * curve[MAX_K]
-    needed = next(cut for cut in range(1, MAX_K + 1) if curve[cut] >= target)
-    params = {
-        "k": needed,
-        "recall": round(curve[needed], 3),
-        "recall10": round(curve[MAX_K], 3),
-        "share": round(100 * TOP_K_RECALL_SHARE),
-        "rule_k": rule_k,
-        "rule_recall": round(curve[min(rule_k, MAX_K)], 3),
-    }
-    if needed < rule_k:
-        m = Measured(needed, [("bench.top_k.lower", params)], changed=True)
+    if curve[MAX_K] == 0:
+        warnings.append("no query found its source in the top 10; top-k is left to the rules")
+        m = Measured(rule_k, [("bench.top_k.no_recall", {})], changed=False, basis="rule-based")
     else:
-        m = Measured(rule_k, [("bench.top_k.confirmed", params)], changed=False)
+        needed = next(cut for cut in range(1, MAX_K + 1) if curve[cut] >= TOP_K_RECALL_SHARE * curve[MAX_K])
+        params = {
+            "k": needed,
+            "recall": _r(curve[needed]),
+            "recall10": _r(curve[MAX_K]),
+            "share": round(100 * TOP_K_RECALL_SHARE),
+            "rule_k": rule_k,
+            "rule_recall": _r(curve[min(rule_k, MAX_K)]),
+            "retriever": final.retriever,
+        }
+        if needed != rule_k:
+            m = Measured(needed, [("bench.top_k.changed", params)], changed=True)
+        else:
+            m = Measured(rule_k, [("bench.top_k.confirmed", params)], changed=False)
     decide("retrieval.top_k", {"final": rule_k}, m)
     return winner, measured, decisions
 

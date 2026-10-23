@@ -215,6 +215,7 @@ class BenchConfig(BaseModel):
     recommended: bool  # chunking equal to the rule-based recommendation
     chunks: int
     recall_at_k: Interval
+    recall_at_budget: Interval  # span recall keeping ranked chunks within budget_tokens of context
     mrr: Interval
     ndcg: Interval
     curves: dict[str, dict[str, float]]  # {"recall": {"1": ..., "3": ..., "5": ..., "10": ...}}
@@ -258,6 +259,8 @@ class BenchResult(BaseModel):
     lexical_overlap: dict[str, Any] = Field(default_factory=dict)  # {"mean": float, "by_kind": {...}}
     retrievers: list[str]
     dense_model: str | None
+    dense_max_tokens: int | None = None  # tokens the dense model reads per pass; longer chunks are windowed
+    budget_tokens: int = 1024
     warnings: list[str]
     primary_metric: str = "ndcg"
     configs: list[BenchConfig]

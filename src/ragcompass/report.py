@@ -191,6 +191,7 @@ def _bench_rows(bench: dict, lang: str) -> list[list[str]]:
             c["label"] + (" *" if c["recommended"] else ""),
             str(c["chunks"]),
             _interval(c["recall_at_k"], lang),
+            _interval(c.get("recall_at_budget") or c["recall_at_k"], lang),
             _interval(c["mrr"], lang),
             _interval(c["ndcg"], lang),
             num(round(c["index_ms"], 1), ""),
@@ -237,6 +238,7 @@ def bench_markdown(report: Report) -> list[str]:
         label("config", lang),
         label("chunks", lang),
         label("recall_k", lang, k=k),
+        label("recall_budget", lang, budget=bench.get("budget_tokens", 1024)),
         label("mrr", lang),
         label("ndcg_k", lang, k=k),
         label("index_ms", lang),
@@ -272,13 +274,14 @@ def render_bench(report: Report, console: Console) -> None:
         label("config", lang),
         label("chunks", lang),
         label("recall_k", lang, k=k),
+        label("recall_budget", lang, budget=bench.get("budget_tokens", 1024)),
         label("mrr", lang),
         label("ndcg_k", lang, k=k),
         label("index_ms", lang),
         label("query_ms", lang),
     ]
     for i, header in enumerate(headers):
-        table.add_column(header, justify="left" if i == 0 else "right")
+        table.add_column(header, justify="left" if i == 0 else "right", no_wrap=True)
     for row in _bench_rows(bench, lang):
         table.add_row(*row, style=f"bold {ACCENT}" if row[0].startswith(bench["winner"]["label"]) else "")
     decisions = Table(box=None, show_header=False, pad_edge=False, expand=True)

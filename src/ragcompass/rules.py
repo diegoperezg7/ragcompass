@@ -449,7 +449,7 @@ def recommend(
     top_k = max(1, min(MAX_TOP_K, CONTEXT_BUDGET // largest, vectors or 1))
     k_measured = measured.get("retrieval.top_k")
     if k_measured and k_measured.changed:
-        top_k = max(1, min(top_k, k_measured.value))  # the measurement may lower k, never break the budget
+        top_k = max(1, min(MAX_TOP_K, k_measured.value, vectors or 1))  # measured: up or down
     rerank = vectors >= RERANK_MIN_VECTORS
     candidates = min(top_k * RERANK_CANDIDATES, vectors) if rerank else top_k
     parts = [("retrieval.top_k", {"budget": CONTEXT_BUDGET, "largest": largest, "k": top_k})]
@@ -460,6 +460,10 @@ def recommend(
     k_basis = "rule-based"
     if k_measured:
         parts, k_basis = parts + k_measured.parts, k_measured.basis
+        if top_k * largest > CONTEXT_BUDGET:
+            parts.append(
+                ("retrieval.top_k.over_budget", {"k": top_k, "largest": largest, "budget": CONTEXT_BUDGET})
+            )
     plan.add(
         "retrieval.top_k",
         {"candidates": candidates, "final": top_k},

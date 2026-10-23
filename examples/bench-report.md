@@ -16,17 +16,17 @@
 | parser.code | language-aware splitter on class/function boundaries | rule-based | 1 source file; splitting on definitions keeps functions whole. |
 | parser.xlsx | openpyxl row serializer, one table per sheet | rule-based | 14 data rows; serializing each row with its header keeps values attached to column names. |
 | parser.image | vision-language model captions (e.g. qwen2.5-vl via Ollama) | rule-based | 1 image with no text layer; a VLM caption or OCR is the only way to index them. |
-| chunking.documents | strategy heading, size 256, overlap 0 | measured | 100% of the text sits under headings and the median section is 75 tokens. At 256 tokens, heading has the lowest damage score (13.3: 0.0% sentence cuts, 0.0% table cuts, 0.0% orphan headings, 0.0% code cuts, 13.3% tiny chunks) against recursive 25.0, fixed 146.2. Benchmark (60 queries): heading 256/0 · bm25 scores nDCG@5 0.907 [0.864, 0.949]; no other candidate beats it by a significant margin. |
+| chunking.documents | strategy heading, size 256, overlap 0 | rule-based | 100% of the text sits under headings and the median section is 75 tokens. At 256 tokens, heading has the lowest damage score (13.3: 0.0% sentence cuts, 0.0% table cuts, 0.0% orphan headings, 0.0% code cuts, 13.3% tiny chunks) against recursive 25.0, fixed 146.2. Benchmark (60 queries): heading 256/0 · bm25 covers 0.95 [0.883, 1.0] of the source span within 1024 tokens of context; no candidate beats it significantly (97.5% Bonferroni-adjusted intervals, 2 comparisons), so the rule stands. |
 | chunking.tables | strategy row, size 512, overlap 0 | rule-based | The median row is 35 tokens, so 512 fits the header plus 8 rows. At 512 tokens, row has the lowest damage score (0.0: 0.0% sentence cuts, 0.0% table cuts, 0.0% orphan headings, 0.0% code cuts, 0.0% tiny chunks) against recursive 150.0, fixed 225.0. |
 | chunking.code | strategy recursive, size 512, overlap 0 | rule-based | 512 tokens fits a typical function with its signature and docstring. At 512 tokens, recursive has the lowest damage score (0.0: 0.0% sentence cuts, 0.0% table cuts, 0.0% orphan headings, 0.0% code cuts, 0.0% tiny chunks) against fixed 0.0. |
 | vectors | 30 | rule-based | 21 chunks measured by the simulation. Plus 5 image captions of ~100 tokens each. Plus ~4 estimated for 1 scanned page at 800 tokens per page after OCR. |
 | embedding.dimension | 1024 | rule-based | The text is not English-only (en 81%, es 19%); multilingual models at 1024 dims handle it. |
 | embedding.quantization | float32 | rule-based | The float32 index at 1024 dims is 123.8 KiB, well under 1 GiB; quantization would trade recall for memory you do not need to save. |
 | embedding.cost | $0.0008 max | rule-based | 5956 tokens to embed (overlap, repeated headers and image captions included); local models cost nothing, the largest hosted model costs $0.0008 per full index. |
-| retrieval.retriever | bm25 | measured | Hybrid (BM25 fused with dense retrieval), because exact identifiers are common. Benchmark, nDCG@5: bm25 0.907, dense 0.589, hybrid 0.816. bm25 leads hybrid by 0.091 [0.027, 0.157], an interval that excludes zero. |
-| retrieval.hybrid_bm25 | no | measured | 21.4 codes and 80.0 identifiers per 1k tokens: exact tokens like SKUs and dates are matched far better by BM25 than by dense vectors. Follows the measured retriever (bm25). |
-| retrieval.top_k | candidates 2, final 2 | measured | A 3000-token context budget over chunks of up to 512 tokens fits 2. Benchmark: recall@2 is already 0.95, 95% of recall@10 (1.0), so 2 chunks are enough instead of 5. |
-| retrieval.reranker | no | rule-based | 30 vectors is below 10,000: a top-2 from the index is precise enough, and a reranker would add one model call per candidate. Add one if evaluation shows misses. |
+| retrieval.retriever | hybrid | measured | Hybrid (BM25 fused with dense retrieval), because exact identifiers are common. The queries copy 83% of their words from their source, which hands BM25 the win by construction, so BM25 alone is not eligible on this evidence. Benchmark, nDCG@5: bm25 0.907, dense 0.628, hybrid 0.877. hybrid beats every other eligible retriever (95% Bonferroni-adjusted intervals exclude zero). |
+| retrieval.hybrid_bm25 | yes | measured | 21.4 codes and 80.0 identifiers per 1k tokens: exact tokens like SKUs and dates are matched far better by BM25 than by dense vectors. Follows the measured retriever (hybrid). |
+| retrieval.top_k | candidates 3, final 3 | measured | A 3000-token context budget over chunks of up to 512 tokens fits 3. Benchmark (hybrid): recall@3 reaches 0.95, 95% of recall@10 (1.0), so 3 chunks instead of 5 (recall@5 = 1.0). |
+| retrieval.reranker | no | rule-based | 30 vectors is below 10,000: a top-3 from the index is precise enough, and a reranker would add one model call per candidate. Add one if evaluation shows misses. |
 | metadata | source, chunk_index, page, heading_path, sheet, row_range, language, dates, doc_kind | rule-based | source: every chunk must cite its file. chunk_index: lets you expand to neighbouring chunks. page: citations point to a page. heading_path: headings give the chunk its context and a filter. sheet: keep which sheet a row came from. row_range: cite the exact rows. language: mixed languages, filter or route by language. dates: 9.1 dates per 1k tokens, extract them for time filters. doc_kind: mixed formats, filter tables, prose and captions separately. |
 
 ## Documents
@@ -90,24 +90,26 @@
 
 60 template queries, seed 13, k = 5; retrievers: bm25, dense, hybrid; dense model: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2. * marks the rule-based chunking.
 
-Query kinds: keyphrase 20, masked 20, question 20. Lexical overlap with the source (IDF-weighted share of its vocabulary that the query repeats): 0.298 on average (keyphrase 0.391, masked 0.216, question 0.288).
+Query kinds: keyphrase 20, masked 20, question 20. Lexical overlap (IDF-weighted share of each query's words copied from its source): 0.827 on average (keyphrase 0.856, masked 0.8, question 0.826).
 
 > Synthetic queries are an approximation of real ones. --queries llm (local Ollama) or --queries-file with questions from your users give a more reliable measure.
 
-| Configuration | Chunks | Recall@5 | MRR | nDCG@5 | Index ms | Query ms |
-|---|---|---|---|---|---|---|
-| heading 512/0 · bm25 | 13 | 1.0 [1.0, 1.0] | 0.882 [0.821, 0.935] | 0.912 [0.867, 0.951] | 0.5 | 0.01 |
-| heading 256/0 · bm25 * | 21 | 1.0 [1.0, 1.0] | 0.875 [0.817, 0.931] | 0.907 [0.864, 0.949] | 0.6 | 0.01 |
-| recursive 1024/102 · bm25 | 11 | 1.0 [1.0, 1.0] | 0.872 [0.811, 0.925] | 0.905 [0.86, 0.944] | 1.0 | 0.01 |
-| recursive 1024/102 · hybrid | 11 | 1.0 [1.0, 1.0] | 0.774 [0.701, 0.85] | 0.83 [0.774, 0.885] | 58.4 | 0.03 |
-| heading 256/0 · hybrid * | 21 | 1.0 [1.0, 1.0] | 0.754 [0.674, 0.831] | 0.816 [0.756, 0.874] | 311.3 | 0.02 |
-| heading 512/0 · hybrid | 13 | 0.933 [0.867, 0.983] | 0.758 [0.676, 0.837] | 0.796 [0.718, 0.868] | 58.4 | 0.01 |
-| recursive 1024/102 · dense | 11 | 0.85 [0.767, 0.933] | 0.54 [0.463, 0.629] | 0.595 [0.518, 0.684] | 57.3 | 0.01 |
-| heading 256/0 · dense * | 21 | 0.75 [0.633, 0.85] | 0.559 [0.459, 0.658] | 0.589 [0.487, 0.695] | 310.7 | 2.34 |
-| heading 512/0 · dense | 13 | 0.8 [0.7, 0.9] | 0.524 [0.432, 0.62] | 0.578 [0.495, 0.67] | 57.9 | 0.01 |
+| Configuration | Chunks | Recall@5 | Recall@1024 tok | MRR | nDCG@5 | Index ms | Query ms |
+|---|---|---|---|---|---|---|---|
+| recursive 1024/102 · hybrid | 11 | 1.0 [1.0, 1.0] | 0.867 [0.783, 0.95] | 0.892 [0.833, 0.944] | 0.92 [0.876, 0.959] | 694.4 | 2.34 |
+| heading 512/0 · bm25 | 13 | 1.0 [1.0, 1.0] | 0.95 [0.883, 1.0] | 0.882 [0.821, 0.935] | 0.912 [0.867, 0.951] | 0.6 | 0.01 |
+| heading 512/0 · hybrid | 13 | 1.0 [1.0, 1.0] | 0.883 [0.8, 0.95] | 0.881 [0.825, 0.939] | 0.911 [0.869, 0.954] | 727.2 | 2.34 |
+| heading 256/0 · bm25 * | 21 | 1.0 [1.0, 1.0] | 0.95 [0.883, 1.0] | 0.875 [0.817, 0.931] | 0.907 [0.864, 0.949] | 0.6 | 0.01 |
+| recursive 1024/102 · bm25 | 11 | 1.0 [1.0, 1.0] | 0.883 [0.8, 0.95] | 0.872 [0.811, 0.925] | 0.905 [0.86, 0.944] | 0.9 | 0.01 |
+| heading 256/0 · hybrid * | 21 | 1.0 [1.0, 1.0] | 0.95 [0.9, 1.0] | 0.836 [0.764, 0.904] | 0.877 [0.823, 0.929] | 769.3 | 2.35 |
+| recursive 1024/102 · dense | 11 | 0.967 [0.917, 1.0] | 0.65 [0.533, 0.767] | 0.71 [0.629, 0.79] | 0.77 [0.703, 0.836] | 693.5 | 2.33 |
+| heading 512/0 · dense | 13 | 0.933 [0.867, 0.983] | 0.75 [0.65, 0.85] | 0.719 [0.634, 0.804] | 0.765 [0.685, 0.842] | 726.6 | 2.33 |
+| heading 256/0 · dense * | 21 | 0.867 [0.783, 0.95] | 0.733 [0.617, 0.833] | 0.568 [0.477, 0.655] | 0.628 [0.539, 0.708] | 768.7 | 2.33 |
 
 ### Decisions
 
-- **chunking.documents** (measured, kept): Benchmark (60 queries): heading 256/0 · bm25 scores nDCG@5 0.907 [0.864, 0.949]; no other candidate beats it by a significant margin.
-- **retrieval.retriever** (measured, changed): Benchmark, nDCG@5: bm25 0.907, dense 0.589, hybrid 0.816. bm25 leads hybrid by 0.091 [0.027, 0.157], an interval that excludes zero.
-- **retrieval.top_k** (measured, changed): Benchmark: recall@2 is already 0.95, 95% of recall@10 (1.0), so 2 chunks are enough instead of 5.
+- **chunking.documents** (rule-based, kept): Benchmark (60 queries): heading 256/0 · bm25 covers 0.95 [0.883, 1.0] of the source span within 1024 tokens of context; no candidate beats it significantly (97.5% Bonferroni-adjusted intervals, 2 comparisons), so the rule stands.
+- **retrieval.retriever** (measured, kept): The queries copy 83% of their words from their source, which hands BM25 the win by construction, so BM25 alone is not eligible on this evidence. Benchmark, nDCG@5: bm25 0.907, dense 0.628, hybrid 0.877. hybrid beats every other eligible retriever (95% Bonferroni-adjusted intervals exclude zero).
+- **retrieval.top_k** (measured, changed): Benchmark (hybrid): recall@3 reaches 0.95, 95% of recall@10 (1.0), so 3 chunks instead of 5 (recall@5 = 1.0).
+- Warning: 83% of the query words are copied from their source: lexical retrieval wins by construction, so BM25 alone is never chosen on this evidence
+- Warning: the dense model reads 128 tokens per pass; 41 longer chunks were embedded in windows and averaged

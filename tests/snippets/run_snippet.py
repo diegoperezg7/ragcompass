@@ -65,6 +65,7 @@ def main(target: str, path: str) -> None:
         hits = make(chunks, DocumentEmbedder(), TextEmbedder())("fan assembly HX-FAN-118")
     assert len(chunks) > 1, "nothing was split"
     assert hits, "the retriever returned nothing"
+    assert len(hits) <= namespace["TOP_K"], f"{len(hits)} hits for top-k {namespace['TOP_K']}"
     print(f"{target}: {len(chunks)} chunks, {len(hits)} hits")
 
 
