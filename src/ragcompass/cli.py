@@ -135,6 +135,40 @@ def bench(
         err.print(label("written", lang, path=export))
 
 
+@app.command("export")
+def export_command(
+    path: Annotated[Path, typer.Argument(help="File or folder to analyse.", exists=True)],
+    target: Annotated[str, typer.Option(help="yaml, langchain, llamaindex or haystack.")] = "yaml",
+    bench: Annotated[bool, typer.Option(help="Run the benchmark first so measured values are used.")] = False,
+    output: Annotated[
+        Path | None, typer.Option("--output", "-o", help="Write to this file instead of stdout.")
+    ] = None,
+    tokenizer: Annotated[
+        str | None, typer.Option(help="cl100k_base (default), any tiktoken encoding, or 'regex'.")
+    ] = None,
+) -> None:
+    """Print a ready-to-paste configuration for a RAG framework."""
+    from ragcompass import bench as benchmark
+    from ragcompass.analyze import run_analysis as analysis_of
+    from ragcompass.exporters import TARGETS, export
+
+    if target not in TARGETS:
+        raise typer.BadParameter(f"choose one of: {', '.join(TARGETS)}", param_hint="--target")
+    try:
+        active = get_tokenizer(tokenizer)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--tokenizer") from exc
+    analysis = analysis_of(path, tokenizer=active)
+    if bench:
+        benchmark.apply(analysis, benchmark.run_bench(analysis))
+    text = export(analysis.report, target)
+    if output:
+        output.write_text(text, encoding="utf-8")
+        err.print(f"Written to {output}")
+    else:
+        typer.echo(text, nl=False)
+
+
 @app.command()
 def serve(
     host: str = "127.0.0.1",
