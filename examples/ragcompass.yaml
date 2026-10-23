@@ -39,6 +39,7 @@ embedding:
 retrieval:
   top_k: 5
   candidates: 5
+  retriever: hybrid
   hybrid_bm25: true
   reranker: null
 metadata:

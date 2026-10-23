@@ -26,13 +26,24 @@ nothing about *your* documents. A corpus of scanned invoices, a product catalogu
 heading trees each need a different pipeline.
 
 **ragcompass** parses the corpus, profiles every file, actually chunks it with several strategies and sizes, measures
-what each one breaks, and then runs a deterministic rule engine that turns those measurements into a configuration.
-Each recommendation comes with the reason and the figures behind it. No API keys are needed and nothing leaves your
-machine.
+what each one breaks, and runs a deterministic rule engine that turns those measurements into a configuration. Then
+`ragcompass bench` indexes the best candidates with BM25, local dense embeddings and hybrid search, scores them on
+seeded queries with bootstrap intervals, and lets the measurement overrule a rule when they disagree. Each
+recommendation states its reason, its figures and whether it is rule-based or measured. No API keys are needed and
+nothing leaves your machine.
 
 <p align="center">
-  <img src="docs/assets/cli.gif" alt="ragcompass analyze on the sample corpus" width="900">
+  <img src="docs/assets/cli.gif" alt="ragcompass analyze and ragcompass bench on the sample corpus" width="900">
 </p>
+
+## Four interfaces, one core
+
+| Interface | Entry point | For | What it gives you |
+|---|---|---|---|
+| **CLI** | `ragcompass analyze`, `bench`, `export` | Terminals and CI | Rich report, JSON, Markdown, `ragcompass.yaml`, framework snippets, an evalsmith suite |
+| **Web app** | `docker compose up`, <http://localhost:8460> | Exploring a corpus | Upload files or a folder, read the report, explore chunks, run the benchmark |
+| **HTTP API** | `ragcompass serve`, [docs/api.md](docs/api.md) | Other services, the web app | Reports kept by id, chunk explorer, benchmark, 2D embedding projection, exports |
+| **MCP server** | `ragcompass mcp` (stdio or Streamable HTTP) | Assistants and agents | `analyze_corpus`, `recommend_config`, `run_benchmark`, `export_config` |
 
 ## What it recommends
 
@@ -42,11 +53,12 @@ machine.
 | **Chunking strategy, size and overlap** per content group (documents, tables, code) | The simulation below, section lengths, row lengths |
 | **Number of vectors and index size** at 384 / 768 / 1024 / 1536 / 3072 dims, float32 vs int8, HNSW graph | Simulated chunk counts, images, scanned pages |
 | **Embedding dimension, models and cost** | Language mix and tokens to embed, overlap and image captions included |
-| **Top-k, hybrid BM25, reranker** | Context budget, largest chunk size, identifier density, index size |
+| **Retriever** (BM25, dense or hybrid), **top-k**, **reranker** | Identifier density, context budget, largest chunk size, index size; the benchmark when it runs |
 | **Metadata to store** | Pages, headings, sheets, languages, date density |
 
-The output is a terminal report, JSON, Markdown, and a `ragcompass.yaml` you can feed into your ingestion code
-([sample](examples/ragcompass.yaml), [full report](examples/report.md)). Reasons are stored as message ids with
+The output is a terminal report, JSON, Markdown, a `ragcompass.yaml` you can feed into your ingestion code and
+ready-to-paste LangChain, LlamaIndex or Haystack code ([sample yaml](examples/ragcompass.yaml),
+[report](examples/report.md), [report with benchmark](examples/bench-report.md)). Reasons are stored as message ids with
 their parameters and rendered in English or Spanish; the JSON carries the ids, the parameters and the text in both
 languages.
 
@@ -76,10 +88,15 @@ flowchart LR
     A[Ingestion<br/>PDF, DOCX, MD, HTML,<br/>CSV, XLSX, code, images] --> B[Profiling<br/>type, pages, tokens, language,<br/>structure, images, identifiers]
     B --> C[Simulation<br/>fixed, recursive, heading,<br/>page, row x size x overlap]
     C --> D[Rule engine<br/>deterministic thresholds,<br/>one reason per setting]
-    D --> E[Report<br/>terminal, JSON, Markdown,<br/>ragcompass.yaml, web]
+    D --> E[Report<br/>rule-based or measured,<br/>English and Spanish]
+    C -. candidates by damage .-> F[Benchmark<br/>seeded queries, BM25,<br/>dense, hybrid, bootstrap CI]
+    F -. measured values .-> D
+    E --> G[CLI, web, HTTP API, MCP<br/>ragcompass.yaml, framework code,<br/>evalsmith suite]
 
     classDef stage fill:#EFEDFC,stroke:#4C3BCF,color:#15141C
-    class A,B,C,D,E stage
+    classDef measure fill:#FFFFFF,stroke:#4C3BCF,color:#15141C,stroke-dasharray: 4 3
+    class A,B,C,D,E,G stage
+    class F measure
 ```
 
 1. **Ingestion.** Every file becomes a list of structural blocks (heading, paragraph, list item, table, code) in reading
@@ -92,7 +109,10 @@ flowchart LR
    and 20% overlap. Every chunk boundary is classified against the canonical text.
 4. **Rules.** Thresholds live in one file ([`rules.py`](src/ragcompass/rules.py)) next to the reason they exist. The
    same input always yields the same output, and a test checks it.
-5. **Report.** CLI, API and web share one `Report` model.
+5. **Benchmark** (optional). The recommended chunking and the next candidates by damage are indexed and scored on
+   generated queries; significant results replace the rule-based chunking, retriever and top-k (see below).
+6. **Report.** CLI, API, web and MCP share one `Report` model. Reasons are message ids with parameters, rendered in
+   English or Spanish.
 
 ### What the simulation measures
 
@@ -131,12 +151,95 @@ to zero.
 | Reranker | >= 10,000 vectors; then retrieve 4 x top-k candidates (capped at the index size) | Below that a top-k is a meaningful slice of the index; above it the first page of dense results fills with near-miss neighbours, which a cross-encoder reorders. Each candidate costs one model call, so it is not recommended by default on small indexes. |
 | Metadata | `source`, `chunk_index` always; `page`, `heading_path`, `sheet`, `row_range`, `language`, `dates`, `doc_kind` when the corpus has them | Citations, neighbour expansion and filters need these at query time; they cannot be recovered later. |
 
+## Benchmark: measured, not assumed
+
+```bash
+uv sync --extra bench                                   # local dense embeddings (fastembed, ONNX)
+uv run ragcompass bench examples/corpus                 # 60 seeded queries
+uv run ragcompass bench ./my-docs --queries-file my-questions.jsonl --export-evalsmith evals/
+```
+
+How it works:
+
+- **Queries** are drawn with a fixed seed from source sentences and table rows, in three kinds: keyphrases,
+  masked keyphrases without their rarest words (codes and numbers first) and masked questions. The ground truth is
+  the character span of the source, and a retrieved chunk is relevant when it overlaps it, so chunkings of different
+  shapes are judged on the same targets.
+- **Candidates**: the recommended chunking, the best configuration of another strategy and the next one by damage.
+- **Retrievers**: Okapi BM25, dense retrieval with a local model (`BAAI/bge-small-en-v1.5` for English,
+  `paraphrase-multilingual-MiniLM-L12-v2` otherwise) and hybrid by reciprocal rank fusion. Without the extra, BM25
+  only, and the report says so.
+- **Metrics**: span recall@k (share of the source span covered by the top-k), MRR, and nDCG@k with graded gains,
+  each with a 95% paired bootstrap interval; index and query latency.
+- **Decisions**: a candidate replaces the rule-based chunking only when its lead's interval excludes zero. The
+  retriever is chosen among the three with the same test; when BM25 leads but hybrid is within noise, hybrid is kept
+  for robustness and the reason says so. Top-k becomes the smallest k that keeps 95% of recall@10.
+
+On the sample corpus ([full output](examples/bench-report.md)):
+
+| Configuration | Chunks | Recall@5 | MRR | nDCG@5 |
+|---|---|---|---|---|
+| heading 512/0 · bm25 | 13 | 1.0 [1.0, 1.0] | 0.882 [0.821, 0.935] | 0.912 [0.867, 0.951] |
+| heading 256/0 · bm25 (rule-based pick) | 21 | 1.0 [1.0, 1.0] | 0.875 [0.817, 0.931] | 0.907 [0.864, 0.949] |
+| recursive 1024/102 · bm25 | 11 | 1.0 [1.0, 1.0] | 0.872 [0.811, 0.925] | 0.905 [0.860, 0.944] |
+| heading 256/0 · hybrid | 21 | 1.0 [1.0, 1.0] | 0.754 [0.674, 0.831] | 0.816 [0.756, 0.874] |
+| heading 256/0 · dense | 21 | 0.75 [0.633, 0.85] | 0.559 [0.459, 0.658] | 0.589 [0.487, 0.695] |
+
+- **Chunking** stays heading 256/0: heading 512/0 scores 0.005 higher, well inside the noise.
+- **Retriever** changes from hybrid (the rule, driven by 21 codes per 1k tokens) to BM25: bm25 0.907, dense 0.589,
+  hybrid 0.816, and BM25's lead over hybrid, 0.091 [0.027, 0.157], excludes zero.
+- **Top-k** drops from 5 to 2: recall@2 already reaches 95% of recall@10.
+
+**Read these numbers with care.** Synthetic queries are an approximation of real ones: even masked, they are built
+from words of their source, which favours BM25 (the report gives the lexical overlap: here 0.30 of each source's
+IDF-weighted vocabulary, 0.22 for masked queries). The dense model is a small multilingual one, and 60 queries over a
+nine-file corpus give wide intervals. `--queries llm` asks a local Ollama model for paraphrased questions, and
+`--queries-file` takes questions from your users, which is the measure to trust:
+
+```json
+{"text": "how do I open the back cover?", "answer": "Remove the four screws of the rear grille with a T10 driver.", "file": "hx200-maintenance-manual.pdf"}
+```
+
+One JSON object per line (or a JSON list). `answer` is a passage copied from the document and becomes the
+ground-truth span; `file` and `id` are optional.
+
+## Export to your framework
+
+```bash
+uv run ragcompass export ./my-docs --target langchain     # or llamaindex, haystack, yaml
+uv run ragcompass export ./my-docs --target haystack --bench -o rag.py   # measured values
+```
+
+The snippet defines `split(documents)` and `make_retriever(...)` with the recommended splitter, size, overlap,
+retriever and top-k, imports only what that setup needs, and wires local Ollama embeddings in its `__main__` block.
+Every combination of framework, strategy and retriever is parsed in the tests; the heading, recursive and fixed
+splitters with each retriever also run against the real libraries (tested with LangChain 1.4, LlamaIndex 0.14 and Haystack 3.4)
+with fake embeddings.
+
+## MCP server
+
+```bash
+uv run ragcompass mcp --root ~/documents                       # stdio
+uv run ragcompass mcp --transport http --port 8461 --root ~/documents   # Streamable HTTP, stateless
+```
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `analyze_corpus` | `path`, `lang` | Summary, per-file profiles, the chosen chunking simulations and every recommendation with its reason |
+| `recommend_config` | `path`, `lang` | The `ragcompass.yaml` configuration and the reasons |
+| `run_benchmark` | `path`, `queries`, `seed`, `k`, `dense`, `lang` | Benchmark results with intervals, decisions and the updated configuration |
+| `export_config` | `path`, `target`, `measured` | `ragcompass.yaml` or framework code |
+
+Tools only read paths under the allowed roots (`--root`, repeatable, or `RAGCOMPASS_MCP_ROOTS`; the working directory
+by default) and reuse an analysis until the files change. Built on the official Python SDK; the tests drive it in
+memory, over stdio and over HTTP. Client configuration: [`examples/mcp-client-config.json`](examples/mcp-client-config.json).
+
 ## Quickstart
 
 Requires [uv](https://docs.astral.sh/uv/). No API keys.
 
 ```bash
-uv sync
+uv sync                                             # add --extra bench for dense retrieval
 uv run ragcompass analyze examples/corpus            # terminal report
 uv run ragcompass analyze examples/corpus --md       # Markdown
 uv run ragcompass analyze examples/corpus --json     # full report, all simulations included
@@ -145,7 +248,8 @@ uv run ragcompass analyze ./my-docs --all            # every simulated configura
 uv run ragcompass analyze ./my-docs --lang es        # reasons and labels in Spanish
 ```
 
-Web app and API in one container, on <http://localhost:8460>:
+Web app and API in one container, on <http://localhost:8460> (the image includes the bench extra; embedding models
+are downloaded on first use into the `models` volume):
 
 ```bash
 docker compose up --build
@@ -162,8 +266,15 @@ cd web && npm install && npm run dev    # web on :5460, proxies /api
 |---|---|
 | `POST /api/analyze?format=json\|md\|yaml&lang=en\|es` | Multipart upload of files; folder uploads keep relative paths; bodies over 50 MB are rejected while they stream in |
 | `POST /api/sample` | Analyse the bundled sample corpus |
+| `GET /api/report/{id}` | A report kept in memory (30 minutes, 32 reports) |
+| `GET /api/report/{id}/chunks?file=&strategy=&size=&overlap=` | One file's text with every chunk's span, size and issues |
+| `POST` / `GET /api/report/{id}/bench` | Run the benchmark / read its result |
+| `GET /api/report/{id}/projection` | 2D PCA map of chunk embeddings, with the queries and their nearest chunks |
+| `GET /api/report/{id}/export?target=` | `ragcompass.yaml` or framework code |
 | `POST /api/render?format=md\|yaml` | Render a report the client already has |
 | `GET /api/health` | Health check |
+
+The full contract, with every field, is in [docs/api.md](docs/api.md).
 
 **Optional LLM summary.** `--llm-summary` (or `?llm_summary=true`) asks a local [Ollama](https://ollama.com) model
 (`OLLAMA_HOST`, `RAGCOMPASS_OLLAMA_MODEL`, default `llama3.2`) to explain the report in plain language. It is off by
@@ -175,12 +286,18 @@ The Docker image ships the encoding pre-cached. `--tokenizer regex` forces the f
 
 ## Validate your config
 
-ragcompass predicts which configuration will damage your text least; it does not measure retrieval quality. To check
-that the recommended configuration actually retrieves better than the alternative, build the index both ways and
-compare them on a labelled query set with
-[**evalsmith-mcp**](https://github.com/diegoperezg7/evalsmith-mcp): `compare_configs` reports recall@k, MRR and nDCG
-with bootstrap intervals, and `evalsmith run evalsmith.yaml --fail-under recall@5=0.8` fails CI when a change makes
-retrieval worse.
+`ragcompass bench --export-evalsmith evals/` writes the queries, per-chunking qrels, one run per retriever and an
+`evalsmith.yaml` for [**evalsmith-mcp**](https://github.com/diegoperezg7/evalsmith-mcp), with gates 0.05 below the
+measured recall@k and nDCG@k:
+
+```bash
+npx evalsmith run evals/evalsmith.yaml      # passes today, fails the build when retrieval regresses
+```
+
+Chunk ids differ between chunkings, so each chunking gets its own qrels and the suite compares the retrievers of the
+winning one. evalsmith computes the same nDCG@5 and MRR as ragcompass on the exported files (0.907 and 0.875 on
+the sample corpus; [`examples/evalsmith`](examples/evalsmith)). Replace the generated queries with your own
+(`--queries-file`) to gate on questions your users ask.
 
 ## Tests
 
@@ -195,7 +312,9 @@ written into the sample corpus: 8 headings, 2 tables with 5 and 7 rows and 8 lis
 page with no text layer in the scanned invoice. Other tests cover the rule thresholds, the index-size arithmetic,
 determinism, code chunking, scan detection, encodings, translations (every message exists in both languages with
 the same parameters), the API (path traversal, conflicting paths, body limits, a slow analysis not blocking
-`/api/health`) and the CLI.
+`/api/health`) and the CLI. Benchmark metrics are checked by hand on a three-chunk example, decisions on synthetic
+scores, and the exported suite by running the real evalsmith CLI when it is available. The MCP server is tested in
+memory, over stdio and over Streamable HTTP.
 
 ## Sample corpus
 
@@ -219,14 +338,21 @@ ragcompass/
 │   ├── rules.py         # deterministic rule engine and thresholds
 │   ├── messages.py      # reason templates and labels in English and Spanish
 │   ├── analyze.py       # pipeline entry point
+│   ├── bench.py         # query generation, BM25, dense, RRF, metrics, bootstrap, evalsmith export
+│   ├── embeddings.py    # local fastembed models (bench extra)
+│   ├── explorer.py      # per-file chunk view for the web
+│   ├── projection.py    # 2D PCA of chunk embeddings
+│   ├── exporters.py     # LangChain, LlamaIndex and Haystack snippets
+│   ├── store.py         # in-memory reports kept by id
+│   ├── mcp_server.py    # MCP tools over stdio and Streamable HTTP
 │   ├── report.py        # terminal, JSON, Markdown, YAML renderers
 │   ├── cli.py           # Typer CLI
 │   ├── api.py           # FastAPI app, serves the built web app
 │   └── llm.py           # optional Ollama summary
 ├── web/                 # React + Vite + TypeScript + Zustand
 ├── tests/
-├── examples/            # sample corpus, generator, sample outputs
-├── docs/                # README assets and the CLI recording script
+├── examples/            # sample corpus, generator, sample outputs, evalsmith suite, MCP client config
+├── docs/                # api.md, README assets and the CLI recording script
 ├── Dockerfile
 └── docker-compose.yml
 ```
