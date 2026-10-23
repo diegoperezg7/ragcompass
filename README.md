@@ -216,34 +216,52 @@ How it works:
   shapes are judged on the same targets.
 - **Candidates**: the recommended chunking, the best configuration of another strategy and the next one by damage.
 - **Retrievers**: Okapi BM25, dense retrieval with a local model (`BAAI/bge-small-en-v1.5` for English,
-  `paraphrase-multilingual-MiniLM-L12-v2` otherwise) and hybrid by reciprocal rank fusion. Without the extra, BM25
-  only, and the report says so.
-- **Metrics**: span recall@k (share of the source span covered by the top-k), MRR, and nDCG@k with graded gains,
-  each with a 95% paired bootstrap interval; index and query latency.
-- **Decisions**: a candidate replaces the rule-based chunking only when its lead's interval excludes zero. The
-  retriever is chosen among the three with the same test; when BM25 leads but hybrid is within noise, hybrid is kept
-  for robustness and the reason says so. Top-k becomes the smallest k that keeps 95% of recall@10.
+  `paraphrase-multilingual-MiniLM-L12-v2` otherwise; `RAGCOMPASS_DENSE_MODEL` overrides) and hybrid by reciprocal
+  rank fusion. Small models read 128 or 512 tokens per pass, so longer chunks are split into windows with the model's
+  own tokenizer and the window vectors are averaged; the report counts how many. Without the extra, BM25 only.
+- **Metrics**, each with a 95% paired bootstrap interval: span recall@k (share of the source span covered by the
+  top-k); recall within 1,024 tokens of context (ranked chunks are kept only while they fit, which charges big
+  chunks for the room they take); MRR; and nDCG@k whose gain is the share of the span a chunk newly covers, so a
+  duplicate neither helps nor hurts and a first chunk that contains the whole span scores 1. Latency: index time
+  after a warm-up and without cache, and per-query time including the query embedding, the same for every
+  configuration.
+- **Decisions** use Bonferroni-adjusted intervals for the number of comparisons made:
+  - *Chunking* is decided on recall within the token budget, so a configuration cannot win by being bigger. A
+    candidate replaces the rule only when its lead over the rule's pick excludes zero; otherwise the setting stays
+    rule-based.
+  - *Retriever* compares BM25, dense and hybrid on nDCG@k. An option that loses significantly to the best is never
+    returned; among options within noise of the best, the rule's choice stands, and hybrid is preferred to a tied
+    single retriever. When the queries copy 60% or more of their words from their source, BM25 alone is not
+    eligible, because it wins by construction.
+  - *Top-k* becomes the smallest k whose recall reaches 95% of recall@10, up or down from the rule; the report says
+    when that exceeds the context budget, and nothing is decided when recall@10 is 0.
+  - Every reason states the k it was measured at.
+- **Limits**: dense indexing is skipped above 20,000 chunks per configuration, and a run stops with a clear error
+  after `RAGCOMPASS_BENCH_TIMEOUT` seconds (600 by default).
 
 On the sample corpus ([full output](examples/bench-report.md)):
 
-| Configuration | Chunks | Recall@5 | MRR | nDCG@5 |
+| Configuration | Chunks | Recall@5 | Recall@1024 tok | nDCG@5 |
 |---|---|---|---|---|
-| heading 512/0 · bm25 | 13 | 1.0 [1.0, 1.0] | 0.882 [0.821, 0.935] | 0.912 [0.867, 0.951] |
-| heading 256/0 · bm25 (rule-based pick) | 21 | 1.0 [1.0, 1.0] | 0.875 [0.817, 0.931] | 0.907 [0.864, 0.949] |
-| recursive 1024/102 · bm25 | 11 | 1.0 [1.0, 1.0] | 0.872 [0.811, 0.925] | 0.905 [0.860, 0.944] |
-| heading 256/0 · hybrid | 21 | 1.0 [1.0, 1.0] | 0.754 [0.674, 0.831] | 0.816 [0.756, 0.874] |
-| heading 256/0 · dense | 21 | 0.75 [0.633, 0.85] | 0.559 [0.459, 0.658] | 0.589 [0.487, 0.695] |
+| recursive 1024/102 · hybrid | 11 | 1.0 [1.0, 1.0] | 0.867 [0.783, 0.95] | 0.92 [0.876, 0.959] |
+| heading 512/0 · bm25 | 13 | 1.0 [1.0, 1.0] | 0.95 [0.883, 1.0] | 0.912 [0.867, 0.951] |
+| heading 256/0 · bm25 (rule-based pick) | 21 | 1.0 [1.0, 1.0] | 0.95 [0.883, 1.0] | 0.907 [0.864, 0.949] |
+| heading 256/0 · hybrid | 21 | 1.0 [1.0, 1.0] | 0.95 [0.9, 1.0] | 0.877 [0.823, 0.929] |
+| heading 256/0 · dense | 21 | 0.867 [0.783, 0.95] | 0.733 [0.617, 0.833] | 0.628 [0.539, 0.708] |
 
-- **Chunking** stays heading 256/0: heading 512/0 scores 0.005 higher, well inside the noise.
-- **Retriever** changes from hybrid (the rule, driven by 21 codes per 1k tokens) to BM25: bm25 0.907, dense 0.589,
-  hybrid 0.816, and BM25's lead over hybrid, 0.091 [0.027, 0.157], excludes zero.
-- **Top-k** drops from 5 to 2: recall@2 already reaches 95% of recall@10.
+- **Chunking** stays heading 256/0, rule-based: the 1,024-token chunks top nDCG@5 because each chunk holds more of
+  the corpus, but within the same context budget they recover less of the span (0.867 against 0.95), and no
+  candidate's lead survives the adjusted intervals.
+- **Retriever** stays hybrid, now measured: bm25 0.907, dense 0.628, hybrid 0.877. BM25 alone scores highest, but
+  the queries copy 83% of their words from their source, so BM25 is not eligible on this evidence; hybrid beats dense
+  with an interval that excludes zero.
+- **Top-k** goes from 5 to 3: recall@3 already reaches 95% of recall@10 with hybrid.
 
-**Read these numbers with care.** Synthetic queries are an approximation of real ones: even masked, they are built
-from words of their source, which favours BM25 (the report gives the lexical overlap: here 0.30 of each source's
-IDF-weighted vocabulary, 0.22 for masked queries). The dense model is a small multilingual one, and 60 queries over a
-nine-file corpus give wide intervals. `--queries llm` asks a local Ollama model for paraphrased questions, and
-`--queries-file` takes questions from your users, which is the measure to trust:
+**Read these numbers with care.** Synthetic queries are an approximation of real ones: even masked, they reuse the
+words of their source (83% here), which favours BM25; the report says so and the decisions account for it. The
+dense model is a small multilingual one that reads 128 tokens at a time, and 60 queries over a nine-file corpus give
+wide intervals. `--queries llm` asks a local Ollama model for paraphrased questions, and `--queries-file` takes
+questions from your users, which is the measure to trust:
 
 ```json
 {"text": "how do I open the back cover?", "answer": "Remove the four screws of the rear grille with a T10 driver.", "file": "hx200-maintenance-manual.pdf"}
@@ -261,8 +279,9 @@ uv run ragcompass export ./my-docs --target haystack --bench -o rag.py   # measu
 
 The snippet defines `split(documents)` and `make_retriever(...)` with the recommended splitter, size, overlap,
 retriever and top-k, imports only what that setup needs, and wires local Ollama embeddings in its `__main__` block.
-Every combination of framework, strategy and retriever is parsed in the tests; the heading, recursive and fixed
-splitters with each retriever also run against the real libraries (tested with LangChain 1.4, LlamaIndex 0.14 and Haystack 3.4)
+Every combination of framework, strategy and retriever is parsed in the tests, and every import is checked against
+the `pip install` line of the snippet; the heading, recursive and fixed splitters with each retriever also run
+against the real libraries (tested with LangChain 1.4, LlamaIndex 0.14 and Haystack 3.4)
 with fake embeddings.
 
 ## MCP server
@@ -279,7 +298,8 @@ uv run ragcompass mcp --transport http --port 8461 --root ~/documents   # Stream
 | `run_benchmark` | `path`, `queries`, `seed`, `k`, `dense`, `lang` | Benchmark results with intervals, decisions and the updated configuration |
 | `export_config` | `path`, `target`, `measured` | `ragcompass.yaml` or framework code |
 
-Tools only read paths under the allowed roots (`--root`, repeatable, or `RAGCOMPASS_MCP_ROOTS`; the working directory
+The HTTP transport listens on 127.0.0.1 by default and warns when bound to another address: it has no
+authentication. Tools only read paths under the allowed roots (`--root`, repeatable, or `RAGCOMPASS_MCP_ROOTS`; the working directory
 by default) and reuse an analysis until the files change. Built on the official Python SDK; the tests drive it in
 memory, over stdio and over HTTP. Client configuration: [`examples/mcp-client-config.json`](examples/mcp-client-config.json).
 
@@ -303,6 +323,9 @@ are downloaded on first use into the `models` volume):
 ```bash
 docker compose up --build
 ```
+
+The API and the MCP server have no authentication. Keep them on localhost or put them behind a reverse proxy that
+authenticates; do not expose the container port to the internet as is.
 
 Or run them separately for development:
 
@@ -343,9 +366,10 @@ measured recall@k and nDCG@k:
 npx evalsmith run evals/evalsmith.yaml      # passes today, fails the build when retrieval regresses
 ```
 
-Chunk ids differ between chunkings, so each chunking gets its own qrels and the suite compares the retrievers of the
-winning one. evalsmith computes the same nDCG@5 and MRR as ragcompass on the exported files (0.907 and 0.875 on
-the sample corpus; [`examples/evalsmith`](examples/evalsmith)). Replace the generated queries with your own
+Chunk ids differ between chunkings, so each chunking gets its own qrels (grade 2 when a chunk covers at least half
+of the source span, 1 otherwise) and the suite compares the retrievers of the chosen one. On the sample corpus
+([`examples/evalsmith`](examples/evalsmith)) evalsmith passes the suite with MRR 0.836, the same as ragcompass, and
+nDCG@5 0.877 from the graded qrels, which here equals ragcompass's coverage-based 0.877. Replace the generated queries with your own
 (`--queries-file`) to gate on questions your users ask.
 
 ## Tests

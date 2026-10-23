@@ -66,3 +66,44 @@ def test_snippets_run(tmp_path, target, strategy, retriever):
         [SNIPPET_PYTHON, str(RUNNER), target, str(path)], capture_output=True, text=True, timeout=300
     )
     assert done.returncode == 0, done.stdout + done.stderr[-3000:]
+
+
+PACKAGES = {
+    "langchain_core": "langchain-core",
+    "langchain_text_splitters": "langchain-text-splitters",
+    "langchain_community": "langchain-community",
+    "langchain_classic": "langchain-classic",
+    "langchain_ollama": "langchain-ollama",
+    "llama_index.core": "llama-index-core",
+    "llama_index.retrievers.bm25": "llama-index-retrievers-bm25",
+    "llama_index.embeddings.ollama": "llama-index-embeddings-ollama",
+    "haystack_integrations": "ollama-haystack",
+    "haystack": "haystack-ai",
+}
+
+
+@pytest.mark.parametrize(
+    ("target", "strategy", "retriever"), itertools.product(FRAMEWORKS, STRATEGIES, RETRIEVERS)
+)
+def test_every_import_is_in_the_pip_line(target, strategy, retriever):
+    source = render(target, values(strategy, retriever))
+    pip = next(line for line in source.splitlines() if line.startswith("# pip install")).split()[3:]
+    modules = {
+        node.module
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    for module in modules:
+        package = next(
+            pkg for prefix, pkg in PACKAGES.items() if module == prefix or module.startswith(prefix + ".")
+        )
+        assert package in pip, (module, pip)
+    if "from_tiktoken_encoder" in source or "TokenTextSplitter(" in source or 'split_unit="token"' in source:
+        assert "tiktoken" in pip
+    if target == "langchain" and "BM25Retriever" in source:
+        assert "rank_bm25" in pip
+
+
+def test_langchain_hybrid_is_trimmed_to_top_k():
+    source = render("langchain", values("recursive", "hybrid"))
+    assert "docs[:3]" in source

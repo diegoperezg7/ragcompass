@@ -101,8 +101,9 @@ LANGCHAIN_RETRIEVER = {
     return store.as_retriever(search_kwargs={"k": $top_k})""",
     "hybrid": """    bm25 = BM25Retriever.from_documents(chunks, k=$top_k)
     dense = InMemoryVectorStore.from_documents(chunks, embeddings).as_retriever(search_kwargs={"k": $top_k})
-    # EnsembleRetriever fuses both rankings with weighted reciprocal rank fusion.
-    return EnsembleRetriever(retrievers=[bm25, dense], weights=[0.5, 0.5])""",
+    # EnsembleRetriever fuses both rankings with weighted reciprocal rank fusion; keep the top-k of the fusion.
+    fused = EnsembleRetriever(retrievers=[bm25, dense], weights=[0.5, 0.5])
+    return fused | RunnableLambda(lambda docs: docs[:$top_k])""",
 }
 LANGCHAIN = (
     HEADER
@@ -260,14 +261,25 @@ IMPORTS = {
         "base": [("langchain_core.documents", "Document", "langchain-core"), ("", "", "langchain-ollama")],
         "heading": [
             ("langchain_text_splitters", "MarkdownHeaderTextSplitter", "langchain-text-splitters"),
-            ("langchain_text_splitters", "RecursiveCharacterTextSplitter", "tiktoken"),
+            ("langchain_text_splitters", "RecursiveCharacterTextSplitter", "langchain-text-splitters"),
+            ("", "", "tiktoken"),
         ],
         "recursive": [
-            ("langchain_text_splitters", "RecursiveCharacterTextSplitter", "langchain-text-splitters")
+            ("langchain_text_splitters", "RecursiveCharacterTextSplitter", "langchain-text-splitters"),
+            ("", "", "tiktoken"),
         ],
-        "fixed": [("langchain_text_splitters", "TokenTextSplitter", "langchain-text-splitters")],
-        "page": [("langchain_text_splitters", "RecursiveCharacterTextSplitter", "langchain-text-splitters")],
-        "row": [("langchain_text_splitters", "RecursiveCharacterTextSplitter", "langchain-text-splitters")],
+        "fixed": [
+            ("langchain_text_splitters", "TokenTextSplitter", "langchain-text-splitters"),
+            ("", "", "tiktoken"),
+        ],
+        "page": [
+            ("langchain_text_splitters", "RecursiveCharacterTextSplitter", "langchain-text-splitters"),
+            ("", "", "tiktoken"),
+        ],
+        "row": [
+            ("langchain_text_splitters", "RecursiveCharacterTextSplitter", "langchain-text-splitters"),
+            ("", "", "tiktoken"),
+        ],
         "bm25": [
             ("langchain_community.retrievers", "BM25Retriever", "langchain-community"),
             ("", "", "rank_bm25"),
@@ -276,13 +288,16 @@ IMPORTS = {
         "hybrid": [
             ("langchain_classic.retrievers", "EnsembleRetriever", "langchain-classic"),
             ("langchain_community.retrievers", "BM25Retriever", "langchain-community"),
-            ("langchain_core.vectorstores", "InMemoryVectorStore", "rank_bm25"),
+            ("langchain_core.runnables", "RunnableLambda", "langchain-core"),
+            ("langchain_core.vectorstores", "InMemoryVectorStore", "langchain-core"),
+            ("", "", "rank_bm25"),
         ],
     },
     "llamaindex": {
         "base": [
             ("llama_index.core", "Document", "llama-index-core"),
             ("", "", "llama-index-embeddings-ollama"),
+            ("", "", "tiktoken"),  # the default tokenizer of the LlamaIndex splitters
         ],
         "heading": [
             ("llama_index.core.node_parser", "MarkdownNodeParser", "llama-index-core"),
