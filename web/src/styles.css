@@ -1883,9 +1883,41 @@ kbd {
   font-size: 13px;
 }
 
+.winner-parts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 2px 0 8px;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+
+.winner-parts li {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.winner-top {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--accent-line);
+}
+
+.winner-top .badge {
+  vertical-align: 1px;
+}
+
+.legend-item.strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
 .winner-meta {
+  max-width: 340px;
   font-size: 12px;
-  white-space: nowrap;
+  text-align: right;
 }
 
 .bench-toolbar {
@@ -3082,7 +3114,38 @@ pre.code {
     grid-template-columns: auto minmax(0, 1fr);
   }
 
-  .winner-meta {
+  .winner-parts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 2px 0 8px;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+
+.winner-parts li {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.winner-top {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--accent-line);
+}
+
+.winner-top .badge {
+  vertical-align: 1px;
+}
+
+.legend-item.strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.winner-meta {
     grid-column: 2;
     white-space: normal;
   }

@@ -151,6 +151,11 @@ export interface BenchConfig {
   query_ms: { mean: number; p95: number };
 }
 
+export interface Basis<T> {
+  value: T;
+  basis: "rule-based" | "measured";
+}
+
 export interface BenchDecision {
   key: string;
   basis: "rule-based" | "measured";
@@ -177,7 +182,21 @@ export interface Bench {
   warnings: string[];
   primary_metric: "ndcg" | "mrr" | "recall_at_k";
   configs: BenchConfig[];
-  winner: { label: string; runner_up: string | null; significant: boolean; margin: Interval | null };
+  /** What the benchmark recommends (not necessarily the top score), with the basis of each part. */
+  winner: {
+    label: string;
+    chunking: Basis<{ strategy: string; size: number; overlap: number }>;
+    retriever: Basis<string>;
+    top_k: Basis<number>;
+    /** Highest score on `metric`, which may not be the recommendation. */
+    top_by_metric: {
+      metric: "ndcg" | "mrr" | "recall_at_k" | "recall_at_budget";
+      label: string;
+      runner_up: string | null;
+      significant: boolean;
+      margin: Interval | null;
+    } | null;
+  };
   decisions: BenchDecision[];
   sample_queries: { id: string; text: string; file: string; start: number; end: number }[];
   elapsed_ms: number;

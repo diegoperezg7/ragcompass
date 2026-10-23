@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useWidth } from "../lib/useWidth";
 import { useStore, useT } from "../store";
 import type { Bench, BenchConfig, Interval } from "../types";
-import { Empty, Panel, Segmented, Skeleton, TipRows, useTipProps } from "./ui";
+import { BasisBadge, Empty, Panel, Segmented, Skeleton, TipRows, useTipProps } from "./ui";
 
 const METRICS = ["recall_at_budget", "recall_at_k", "mrr", "ndcg"] as const;
 type Metric = (typeof METRICS)[number];
@@ -207,7 +207,9 @@ function Results({ bench }: { bench: Bench }) {
   const order = configs.map((c) => c.label);
   const colorOf = (c: BenchConfig) => `var(--series-${order.indexOf(c.label) + 1})`;
   const decision = bench.decisions.find((d) => d.key.startsWith("chunking.")) ?? bench.decisions[0];
-  const margin = bench.winner.margin;
+  const { winner } = bench;
+  const top = winner.top_by_metric;
+  const margin = top?.margin;
   // The synthetic-queries warning is shown, translated, next to the query quality.
   const warnings = bench.mode === "file" ? bench.warnings : bench.warnings.filter((w) => !w.includes("--queries"));
   const metrics = METRICS.filter((m) => configs.every((c) => c[m]));
@@ -218,24 +220,45 @@ function Results({ bench }: { bench: Bench }) {
         <Trophy size={18} aria-hidden />
         <div>
           <div className="winner-title">
-            <span className="eyebrow">{t.winner}</span>
-            <strong className="mono">{bench.winner.label}</strong>
-            {bench.winner.significant ? <span className="badge ok">{t.significant}</span> : <span className="badge">{t.notSignificant}</span>}
+            <span className="eyebrow">{t.recommendedConfig}</span>
+            <strong className="mono">{winner.label}</strong>
           </div>
-          <p>
-            {decision ? (decision.reason_i18n?.[lang] ?? decision.reason) : null}
-            {margin && bench.winner.runner_up && (
-              <>
-                {decision ? " " : ""}
-                {t.marginText
-                  .replace("{metric}", metricName(bench.primary_metric, bench.k))
-                  .replace("{mean}", `+${n3(margin.mean)}`)
-                  .replace("{lo}", n3(margin.ci[0]))
-                  .replace("{hi}", n3(margin.ci[1]))
-                  .replace("{other}", bench.winner.runner_up)}
-              </>
-            )}
-          </p>
+          <ul className="winner-parts">
+            <li>
+              <span className="muted">{t.chunkingLower}</span>
+              <span className="mono">
+                {winner.chunking.value.strategy} {winner.chunking.value.size}/{winner.chunking.value.overlap}
+              </span>
+              <BasisBadge basis={winner.chunking.basis} />
+            </li>
+            <li>
+              <span className="muted">{t.retrieverLower}</span>
+              <span className="mono">{winner.retriever.value}</span>
+              <BasisBadge basis={winner.retriever.basis} />
+            </li>
+            <li>
+              <span className="muted">top-k</span>
+              <span className="mono">{winner.top_k.value}</span>
+              <BasisBadge basis={winner.top_k.basis} />
+            </li>
+          </ul>
+          {decision && <p>{decision.reason_i18n?.[lang] ?? decision.reason}</p>}
+          {top && top.label !== winner.label && (
+            <p className="winner-top">
+              {t.highest.replace("{metric}", metricName(top.metric, bench.k, bench.budget_tokens))} <strong className="mono">{top.label}</strong>{" "}
+              <span className={`badge${top.significant ? " ok" : ""}`}>{top.significant ? t.significant : t.notSignificant}</span>
+              {margin && top.runner_up && (
+                <span className="muted">
+                  {" "}
+                  {t.marginText
+                    .replace("{mean}", `+${n3(margin.mean)}`)
+                    .replace("{lo}", n3(margin.ci[0]))
+                    .replace("{hi}", n3(margin.ci[1]))
+                    .replace("{other}", top.runner_up)}
+                </span>
+              )}
+            </p>
+          )}
         </div>
         <div className="winner-meta muted">
           {bench.queries} {t.queriesLower} · seed {bench.seed} · {bench.dense_model ?? "BM25"}
@@ -258,23 +281,23 @@ function Results({ bench }: { bench: Bench }) {
         )}
         <div className="legend">
           {configs.map((c) => (
-            <span key={c.label} className="legend-item">
+            <span key={c.label} className={`legend-item${c.label === winner.label ? " strong" : ""}`}>
               <span className="swatch" style={{ background: colorOf(c) }} />
               <span className="mono">{c.label}</span>
-              {c.recommended && <span className="badge accent">{t.rule}</span>}
+              {c.label === winner.label && <span className="badge accent">{t.recommended}</span>}
             </span>
           ))}
         </div>
       </div>
       <div className="bench-grid">
         {metrics.map((m) => (
-          <IntervalBars key={m} configs={configs} metric={m} k={bench.k} budget={bench.budget_tokens} winner={bench.winner.label} colorOf={colorOf} />
+          <IntervalBars key={m} configs={configs} metric={m} k={bench.k} budget={bench.budget_tokens} winner={winner.label} colorOf={colorOf} />
         ))}
       </div>
       <div className="bench-grid two">
         <div>
           <h3 className="chart-title">{t.recallCurve}</h3>
-          <RecallCurve configs={configs} winner={bench.winner.label} colorOf={colorOf} />
+          <RecallCurve configs={configs} winner={winner.label} colorOf={colorOf} />
         </div>
         <div>
           <h3 className="chart-title">{t.latency}</h3>
