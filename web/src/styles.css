@@ -491,6 +491,8 @@ td {
 }
 
 th {
+  white-space: normal;
+  vertical-align: bottom;
   font-size: 12px;
   font-weight: 600;
   color: var(--muted);
@@ -530,7 +532,7 @@ tr.picked td:first-child {
 }
 
 .damage-col {
-  min-width: 170px;
+  min-width: 150px;
 }
 
 .damage {
@@ -563,7 +565,7 @@ tr:not(.picked) .bar span {
 }
 
 .path {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 8px;
   font-weight: 500;

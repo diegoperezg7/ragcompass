@@ -239,9 +239,11 @@ function Documents({ report }: { report: ReportData }) {
           <tbody>
             {report.documents.map((d) => (
               <tr key={d.path}>
-                <td className="path">
-                  <FileText size={14} />
-                  {d.path}
+                <td>
+                  <span className="path">
+                    <FileText size={14} />
+                    {d.path}
+                  </span>
                 </td>
                 <td>
                   <span className={`kind${d.kind === "pdf_scanned" || d.error ? " warn" : ""}`}>{d.kind}</span>
