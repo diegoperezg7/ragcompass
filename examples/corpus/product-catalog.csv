@@ -1,0 +1,41 @@
+sku,name,category,price_chf,last_updated,stock
+HX-200,Bench calibrator,Instruments,6850.00,2025-01-01,0
+HX-FAN-118,Fan assembly HX-200,Spare parts,84.00,2025-02-02,37
+HX-FLT-021,"Air filter, pack of 5",Spare parts,19.50,2025-03-03,74
+RLY-4471-B,Output relay,Spare parts,132.00,2025-04-04,111
+BAT-CR2032-HX,Backup battery,Spare parts,6.90,2025-05-05,28
+CAL-KIT-07,Calibration kit,Accessories,1240.00,2025-06-06,65
+CAL-SVC-12,Annual verification service,Services,420.00,2025-07-07,102
+PRB-110-K,"Test leads, 1 kV",Accessories,58.00,2025-08-08,19
+HX-200-V1,"Bench calibrator, variant 1",Instruments,6853.50,2025-09-09,56
+HX-FAN-118-V1,"Fan assembly HX-200, variant 1",Spare parts,87.50,2025-10-10,93
+HX-FLT-021-V1,"Air filter, pack of 5, variant 1",Spare parts,23.00,2025-11-11,10
+RLY-4471-B-V1,"Output relay, variant 1",Spare parts,135.50,2025-12-12,47
+BAT-CR2032-HX-V1,"Backup battery, variant 1",Spare parts,10.40,2025-01-13,84
+CAL-KIT-07-V1,"Calibration kit, variant 1",Accessories,1243.50,2025-02-14,1
+CAL-SVC-12-V1,"Annual verification service, variant 1",Services,423.50,2025-03-15,38
+PRB-110-K-V1,"Test leads, 1 kV, variant 1",Accessories,61.50,2025-04-16,75
+HX-200-V2,"Bench calibrator, variant 2",Instruments,6857.00,2025-05-17,112
+HX-FAN-118-V2,"Fan assembly HX-200, variant 2",Spare parts,91.00,2025-06-18,29
+HX-FLT-021-V2,"Air filter, pack of 5, variant 2",Spare parts,26.50,2025-07-19,66
+RLY-4471-B-V2,"Output relay, variant 2",Spare parts,139.00,2025-08-20,103
+BAT-CR2032-HX-V2,"Backup battery, variant 2",Spare parts,13.90,2025-09-21,20
+CAL-KIT-07-V2,"Calibration kit, variant 2",Accessories,1247.00,2025-10-22,57
+CAL-SVC-12-V2,"Annual verification service, variant 2",Services,427.00,2025-11-23,94
+PRB-110-K-V2,"Test leads, 1 kV, variant 2",Accessories,65.00,2025-12-24,11
+HX-200-V3,"Bench calibrator, variant 3",Instruments,6860.50,2025-01-25,48
+HX-FAN-118-V3,"Fan assembly HX-200, variant 3",Spare parts,94.50,2025-02-26,85
+HX-FLT-021-V3,"Air filter, pack of 5, variant 3",Spare parts,30.00,2025-03-27,2
+RLY-4471-B-V3,"Output relay, variant 3",Spare parts,142.50,2025-04-01,39
+BAT-CR2032-HX-V3,"Backup battery, variant 3",Spare parts,17.40,2025-05-02,76
+CAL-KIT-07-V3,"Calibration kit, variant 3",Accessories,1250.50,2025-06-03,113
+CAL-SVC-12-V3,"Annual verification service, variant 3",Services,430.50,2025-07-04,30
+PRB-110-K-V3,"Test leads, 1 kV, variant 3",Accessories,68.50,2025-08-05,67
+HX-200-V4,"Bench calibrator, variant 4",Instruments,6864.00,2025-09-06,104
+HX-FAN-118-V4,"Fan assembly HX-200, variant 4",Spare parts,98.00,2025-10-07,21
+HX-FLT-021-V4,"Air filter, pack of 5, variant 4",Spare parts,33.50,2025-11-08,58
+RLY-4471-B-V4,"Output relay, variant 4",Spare parts,146.00,2025-12-09,95
+BAT-CR2032-HX-V4,"Backup battery, variant 4",Spare parts,20.90,2025-01-10,12
+CAL-KIT-07-V4,"Calibration kit, variant 4",Accessories,1254.00,2025-02-11,49
+CAL-SVC-12-V4,"Annual verification service, variant 4",Services,434.00,2025-03-12,86
+PRB-110-K-V4,"Test leads, 1 kV, variant 4",Accessories,72.00,2025-04-13,3

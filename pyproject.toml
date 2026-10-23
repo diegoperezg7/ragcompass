@@ -1,0 +1,48 @@
+[project]
+name = "ragcompass"
+version = "0.1.0"
+description = "Profile a document corpus and get a reasoned, measured RAG configuration."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { file = "LICENSE" }
+authors = [{ name = "Diego Pérez" }]
+dependencies = [
+    "beautifulsoup4>=4.12",
+    "fastapi>=0.115",
+    "httpx>=0.27",
+    "openpyxl>=3.1",
+    "pydantic>=2.8",
+    "pymupdf>=1.24",
+    "python-docx>=1.1",
+    "python-multipart>=0.0.9",
+    "pyyaml>=6.0",
+    "rich>=13.7",
+    "tiktoken>=0.7",
+    "typer>=0.12",
+    "uvicorn>=0.30",
+]
+
+[project.scripts]
+ragcompass = "ragcompass.cli:app"
+
+[dependency-groups]
+dev = ["pytest>=8.2", "ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ragcompass"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore:builtin type .* has no __module__ attribute:DeprecationWarning"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501"]
