@@ -16,7 +16,7 @@
 | parser.code | language-aware splitter on class/function boundaries | rule-based | 1 source file; splitting on definitions keeps functions whole. |
 | parser.xlsx | openpyxl row serializer, one table per sheet | rule-based | 14 data rows; serializing each row with its header keeps values attached to column names. |
 | parser.image | vision-language model captions (e.g. qwen2.5-vl via Ollama) | rule-based | 1 image with no text layer; a VLM caption or OCR is the only way to index them. |
-| chunking.documents | strategy heading, size 256, overlap 0 | rule-based | 100% of the text sits under headings and the median section is 75 tokens. At 256 tokens, heading has the lowest damage score (13.3: 0.0% sentence cuts, 0.0% table cuts, 0.0% orphan headings, 0.0% code cuts, 13.3% tiny chunks) against recursive 25.0, fixed 146.2. Benchmark (60 queries): heading 256/0 · bm25 covers 0.95 [0.883, 1.0] of the source span within 1024 tokens of context; no candidate beats it significantly (97.5% Bonferroni-adjusted intervals, 2 comparisons), so the rule stands. |
+| chunking.documents | strategy heading, size 256, overlap 0 | rule-based | 100% of the text sits under headings and the median section is 75 tokens. At 256 tokens, heading has the lowest damage score (13.3: 0.0% sentence cuts, 0.0% table cuts, 0.0% orphan headings, 0.0% code cuts, 13.3% tiny chunks) against recursive 25.0, fixed 146.2. Benchmark (60 queries, hybrid): heading 256/0 covers 0.95 [0.9, 1.0] of the source span within 1024 tokens of context; no candidate beats it significantly (97.5% Bonferroni-adjusted intervals, 2 comparisons), so the rule stands. |
 | chunking.tables | strategy row, size 512, overlap 0 | rule-based | The median row is 35 tokens, so 512 fits the header plus 8 rows. At 512 tokens, row has the lowest damage score (0.0: 0.0% sentence cuts, 0.0% table cuts, 0.0% orphan headings, 0.0% code cuts, 0.0% tiny chunks) against recursive 150.0, fixed 225.0. |
 | chunking.code | strategy recursive, size 512, overlap 0 | rule-based | 512 tokens fits a typical function with its signature and docstring. At 512 tokens, recursive has the lowest damage score (0.0: 0.0% sentence cuts, 0.0% table cuts, 0.0% orphan headings, 0.0% code cuts, 0.0% tiny chunks) against fixed 0.0. |
 | vectors | 30 | rule-based | 21 chunks measured by the simulation. Plus 5 image captions of ~100 tokens each. Plus ~4 estimated for 1 scanned page at 800 tokens per page after OCR. |
@@ -94,21 +94,23 @@ Query kinds: keyphrase 20, masked 20, question 20. Lexical overlap (IDF-weighted
 
 > Synthetic queries are an approximation of real ones. --queries llm (local Ollama) or --queries-file with questions from your users give a more reliable measure.
 
+**Recommended: heading 256/0 · hybrid (chunking rule-based, retriever measured, top-k 3 measured). Highest nDCG@5: recursive 1024/102 · hybrid, not recommended: see the decisions.**
+
 | Configuration | Chunks | Recall@5 | Recall@1024 tok | MRR | nDCG@5 | Index ms | Query ms |
 |---|---|---|---|---|---|---|---|
-| recursive 1024/102 · hybrid | 11 | 1.0 [1.0, 1.0] | 0.867 [0.783, 0.95] | 0.892 [0.833, 0.944] | 0.92 [0.876, 0.959] | 694.4 | 2.34 |
+| recursive 1024/102 · hybrid | 11 | 1.0 [1.0, 1.0] | 0.867 [0.783, 0.95] | 0.892 [0.833, 0.944] | 0.92 [0.876, 0.959] | 691.5 | 2.31 |
 | heading 512/0 · bm25 | 13 | 1.0 [1.0, 1.0] | 0.95 [0.883, 1.0] | 0.882 [0.821, 0.935] | 0.912 [0.867, 0.951] | 0.6 | 0.01 |
-| heading 512/0 · hybrid | 13 | 1.0 [1.0, 1.0] | 0.883 [0.8, 0.95] | 0.881 [0.825, 0.939] | 0.911 [0.869, 0.954] | 727.2 | 2.34 |
+| heading 512/0 · hybrid | 13 | 1.0 [1.0, 1.0] | 0.883 [0.8, 0.95] | 0.881 [0.825, 0.939] | 0.911 [0.869, 0.954] | 704.7 | 2.31 |
 | heading 256/0 · bm25 * | 21 | 1.0 [1.0, 1.0] | 0.95 [0.883, 1.0] | 0.875 [0.817, 0.931] | 0.907 [0.864, 0.949] | 0.6 | 0.01 |
 | recursive 1024/102 · bm25 | 11 | 1.0 [1.0, 1.0] | 0.883 [0.8, 0.95] | 0.872 [0.811, 0.925] | 0.905 [0.86, 0.944] | 0.9 | 0.01 |
-| heading 256/0 · hybrid * | 21 | 1.0 [1.0, 1.0] | 0.95 [0.9, 1.0] | 0.836 [0.764, 0.904] | 0.877 [0.823, 0.929] | 769.3 | 2.35 |
-| recursive 1024/102 · dense | 11 | 0.967 [0.917, 1.0] | 0.65 [0.533, 0.767] | 0.71 [0.629, 0.79] | 0.77 [0.703, 0.836] | 693.5 | 2.33 |
-| heading 512/0 · dense | 13 | 0.933 [0.867, 0.983] | 0.75 [0.65, 0.85] | 0.719 [0.634, 0.804] | 0.765 [0.685, 0.842] | 726.6 | 2.33 |
-| heading 256/0 · dense * | 21 | 0.867 [0.783, 0.95] | 0.733 [0.617, 0.833] | 0.568 [0.477, 0.655] | 0.628 [0.539, 0.708] | 768.7 | 2.33 |
+| heading 256/0 · hybrid * | 21 | 1.0 [1.0, 1.0] | 0.95 [0.9, 1.0] | 0.836 [0.764, 0.904] | 0.877 [0.823, 0.929] | 767.3 | 2.31 |
+| recursive 1024/102 · dense | 11 | 0.967 [0.917, 1.0] | 0.65 [0.533, 0.767] | 0.71 [0.629, 0.79] | 0.77 [0.703, 0.836] | 690.6 | 2.3 |
+| heading 512/0 · dense | 13 | 0.933 [0.867, 0.983] | 0.75 [0.65, 0.85] | 0.719 [0.634, 0.804] | 0.765 [0.685, 0.842] | 704.1 | 2.3 |
+| heading 256/0 · dense * | 21 | 0.867 [0.783, 0.95] | 0.733 [0.617, 0.833] | 0.568 [0.477, 0.655] | 0.628 [0.539, 0.708] | 766.7 | 2.3 |
 
 ### Decisions
 
-- **chunking.documents** (rule-based, kept): Benchmark (60 queries): heading 256/0 · bm25 covers 0.95 [0.883, 1.0] of the source span within 1024 tokens of context; no candidate beats it significantly (97.5% Bonferroni-adjusted intervals, 2 comparisons), so the rule stands.
+- **chunking.documents** (rule-based, kept): Benchmark (60 queries, hybrid): heading 256/0 covers 0.95 [0.9, 1.0] of the source span within 1024 tokens of context; no candidate beats it significantly (97.5% Bonferroni-adjusted intervals, 2 comparisons), so the rule stands.
 - **retrieval.retriever** (measured, kept): The queries copy 83% of their words from their source, which hands BM25 the win by construction, so BM25 alone is not eligible on this evidence. Benchmark, nDCG@5: bm25 0.907, dense 0.628, hybrid 0.877. hybrid beats every other eligible retriever (95% Bonferroni-adjusted intervals exclude zero).
 - **retrieval.top_k** (measured, changed): Benchmark (hybrid): recall@3 reaches 0.95, 95% of recall@10 (1.0), so 3 chunks instead of 5 (recall@5 = 1.0).
 - Warning: 83% of the query words are copied from their source: lexical retrieval wins by construction, so BM25 alone is never chosen on this evidence

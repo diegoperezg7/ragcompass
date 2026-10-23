@@ -364,3 +364,39 @@ def test_llm_queries_fall_back_to_templates(analysis, monkeypatch):
     result = bench.run_bench(analysis, queries=6, seed=4, mode="llm", dense=False).result
     assert result.mode == "template"
     assert any("LLM queries unavailable" in w for w in result.warnings)
+
+
+def test_winner_is_the_recommendation(bm25_run):
+    result = bm25_run.result
+    decisions = {d.key: d for d in result.decisions}
+    chunking = decisions["chunking.documents"].measured_value
+    winner = result.winner
+    assert winner.label == f"{chunking['strategy']} {chunking['size']}/{chunking['overlap']} · bm25"
+    assert winner.chunking == {"value": chunking, "basis": decisions["chunking.documents"].basis}
+    assert winner.top_k["value"] == decisions["retrieval.top_k"].measured_value
+    best = max(result.configs, key=lambda c: c.ndcg.mean)
+    assert winner.top_by_metric.label == best.label and winner.top_by_metric.metric == "ndcg"
+
+
+def test_top_scorer_can_differ_from_the_recommendation(analysis, bm25_run):
+    entries = _retriever_entries(bm25_run, {"bm25": 0.95, "dense": 0.5, "hybrid": 0.7})
+    boot = Bootstrap(len(bm25_run.queries), 7)
+    winner, _, decisions = bench._decide(
+        analysis, entries, [], ["bm25", "dense", "hybrid"], 5, boot, len(bm25_run.queries), 0.9, []
+    )
+    assert winner.label.endswith("· hybrid")  # BM25 is not eligible with copied query words
+    assert winner.top_by_metric.label.endswith("· bm25")
+    chunking = next(d for d in decisions if d.key == "chunking.documents")
+    assert ", hybrid)" in chunking.reason  # compared with the retriever that is deployed
+
+
+def test_chunking_is_compared_again_with_the_measured_retriever(analysis, bm25_run):
+    # The rule deploys hybrid, the measurement picks bm25: the chunking comparison is redone with bm25.
+    entries = _retriever_entries(bm25_run, {"bm25": 0.95, "dense": 0.5, "hybrid": 0.6})
+    boot = Bootstrap(len(bm25_run.queries), 7)
+    winner, _, decisions = bench._decide(
+        analysis, entries, [], ["bm25", "dense", "hybrid"], 5, boot, len(bm25_run.queries), 0.0, []
+    )
+    assert winner.retriever["value"] == "bm25"
+    chunking = next(d for d in decisions if d.key == "chunking.documents")
+    assert ", bm25)" in chunking.reason

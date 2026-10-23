@@ -226,7 +226,8 @@ How it works:
   after a warm-up and without cache, and per-query time including the query embedding, the same for every
   configuration.
 - **Decisions** use Bonferroni-adjusted intervals for the number of comparisons made:
-  - *Chunking* is decided on recall within the token budget, so a configuration cannot win by being bigger. A
+  - *Chunking* is decided on recall within the token budget, so a configuration cannot win by being bigger, and with
+    the retriever that will be deployed (the comparison is repeated if the measured retriever differs from the rule's). A
     candidate replaces the rule only when its lead over the rule's pick excludes zero; otherwise the setting stays
     rule-based.
   - *Retriever* compares BM25, dense and hybrid on nDCG@k. An option that loses significantly to the best is never
@@ -256,6 +257,11 @@ On the sample corpus ([full output](examples/bench-report.md)):
   the queries copy 83% of their words from their source, so BM25 is not eligible on this evidence; hybrid beats dense
   with an interval that excludes zero.
 - **Top-k** goes from 5 to 3: recall@3 already reaches 95% of recall@10 with hybrid.
+
+The report separates the recommendation (heading 256/0 · hybrid, top-k 3, each part labelled rule-based or
+measured) from the configuration with the highest nDCG@5 (recursive 1024/102 · hybrid), so a higher score that the
+decisions rejected is never presented as the winner. Chunkings are compared with the retriever that will be
+deployed.
 
 **Read these numbers with care.** Synthetic queries are an approximation of real ones: even masked, they reuse the
 words of their source (83% here), which favours BM25; the report says so and the decisions account for it. The

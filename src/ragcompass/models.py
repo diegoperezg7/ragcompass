@@ -223,11 +223,24 @@ class BenchConfig(BaseModel):
     query_ms: dict[str, float]  # mean and p95
 
 
-class BenchWinner(BaseModel):
+class TopByMetric(BaseModel):
+    """The configuration with the highest score on one metric, which is not always the recommended one."""
+
+    metric: str  # ndcg
     label: str
     runner_up: str | None = None
     significant: bool = False
-    margin: Interval | None = None  # winner minus runner-up on the primary metric, paired bootstrap
+    margin: Interval | None = None  # top minus runner-up, paired bootstrap
+
+
+class BenchWinner(BaseModel):
+    """What the benchmark ends up recommending: chunking, retriever and top-k, each with its basis."""
+
+    label: str  # "<strategy> <size>/<overlap> · <retriever>"
+    chunking: dict[str, Any]  # {"value": {...}, "basis": "rule-based" | "measured"}
+    retriever: dict[str, Any]
+    top_k: dict[str, Any]
+    top_by_metric: TopByMetric
 
 
 class BenchDecision(BaseModel):

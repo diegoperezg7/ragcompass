@@ -231,6 +231,23 @@ def _bench_queries(bench: dict, lang: str) -> str:
     )
 
 
+def _bench_winner(bench: dict, lang: str) -> str:
+    winner = bench["winner"]
+    top = winner["top_by_metric"]["label"]
+    return label(
+        "bench_winner",
+        lang,
+        label=winner["label"],
+        chunking=label(winner["chunking"]["basis"], lang),
+        retriever=label(winner["retriever"]["basis"], lang),
+        k=winner["top_k"]["value"],
+        top_k=label(winner["top_k"]["basis"], lang),
+        metric_k=bench["k"],
+        top=top,
+        note=label("bench_same" if top == winner["label"] else "bench_other", lang),
+    )
+
+
 def bench_markdown(report: Report) -> list[str]:
     lang, bench = report.lang, report.bench
     k = bench["k"]
@@ -254,6 +271,7 @@ def bench_markdown(report: Report) -> list[str]:
     ]
     if bench["mode"] != "file":
         lines += [f"> {label('bench_note', lang)}", ""]
+    lines += [f"**{_bench_winner(bench, lang)}**", ""]
     lines += [_md_table(headers, _bench_rows(bench, lang)), ""]
     lines += [f"### {label('decisions', lang)}", ""]
     for d in bench["decisions"]:
@@ -296,7 +314,7 @@ def render_bench(report: Report, console: Console) -> None:
     body = [Text(_bench_summary(bench, lang), style="dim"), Text(_bench_queries(bench, lang), style="dim")]
     if bench["mode"] != "file":
         body.append(Text(label("bench_note", lang), style="yellow"))
-    body += [table, Text(""), decisions]
+    body += [Text(_bench_winner(bench, lang), style=f"bold {ACCENT}"), table, Text(""), decisions]
     body += [Text(f"{label('warning', lang)}: {w}", style="yellow") for w in _shown_warnings(bench)]
     console.print(
         Panel(Group(*body), title=label("benchmark", lang), title_align="left", border_style=ACCENT)

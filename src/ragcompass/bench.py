@@ -39,6 +39,7 @@ from ragcompass.models import (
     BlockType,
     Interval,
     ReasonPart,
+    TopByMetric,
 )
 from ragcompass.rules import Measured, Part, recommend
 from ragcompass.signals import STOPWORDS
@@ -820,95 +821,72 @@ def _decide(analysis, entries, configs, retrievers, k, boot, n_queries, overlap=
     report = analysis.report
     warnings = warnings if warnings is not None else []
     by_label = {e.label: e for e in entries}
-    ordered = sorted(entries, key=lambda e: -mean(_ndcg(e)))
-    best, second = ordered[0], (ordered[1] if len(ordered) > 1 else None)
-    margin = boot.difference(_ndcg(best), _ndcg(second)) if second else None
-    winner = BenchWinner(
-        label=best.label,
-        runner_up=second.label if second else None,
-        significant=bool(margin and margin.ci[0] > 0),
-        margin=margin,
-    )
+    group = entries[0].candidate.group
+    labels = list(dict.fromkeys(e.candidate.label for e in entries))
+    rule_label = next(e.candidate.label for e in entries if e.candidate.recommended)
 
     def rec(key):
         return next(r for r in report.recommendations if r.key == key)
 
-    measured: dict[str, Measured] = {}
-    decisions: list[BenchDecision] = []
+    def chunking(retriever: str) -> Measured:
+        """Span recall within the token budget, every candidate with the same retriever.
 
-    def decide(key, rule_value, m: Measured):
-        measured[key] = m
-        texts, parts = _render(m.parts)
-        decisions.append(
-            BenchDecision(
-                key=key,
-                basis=m.basis,
-                rule_value=rule_value,
-                measured_value=m.value,
-                changed=m.changed,
-                reason=texts["en"],
-                reason_i18n=texts,
-                reason_parts=parts,
-            )
-        )
-
-    # Chunking: span recall within a fixed token budget, so a chunking cannot buy recall with size.
-    # Each chunking is taken at its best retriever; the rule's pick is tested against every other
-    # candidate with Bonferroni-adjusted intervals.
-    group = entries[0].candidate.group
-    best_of: dict[str, Entry] = {}
-    for e in entries:
-        current = best_of.get(e.candidate.label)
-        if current is None or mean(_budget(e)) > mean(_budget(current)):
-            best_of[e.candidate.label] = e
-    rule_entry = next(e for e in best_of.values() if e.candidate.recommended)
-    others = [e for e in best_of.values() if e is not rule_entry]
-    comparisons = max(len(others), 1)
-    conf = adjusted_confidence(comparisons)
-    common = {"queries": n_queries, "budget": BUDGET_TOKENS, "conf": conf, "m": comparisons}
-    better = []
-    for e in others:
-        gap = boot.difference(_budget(e), _budget(rule_entry), comparisons)
-        if gap.ci[0] > 0:
-            better.append((mean(_budget(e)), e, gap))
-    if better:
-        _, top, gap = max(better, key=lambda t: t[0])
-        params = {
-            **common,
-            "winner": top.label,
-            "score": _r(mean(_budget(top))),
-            "rule": rule_entry.label,
-            "score_rule": _r(mean(_budget(rule_entry))),
-            "gap": _r(gap.mean),
-            "low": _r(gap.ci[0]),
-            "high": _r(gap.ci[1]),
+        The budget keeps a chunking from winning by size; the rule's pick is tested against every
+        other candidate with Bonferroni-adjusted intervals.
+        """
+        rule_entry = by_label[f"{rule_label} · {retriever}"]
+        others = [by_label[f"{label} · {retriever}"] for label in labels if label != rule_label]
+        comparisons = max(len(others), 1)
+        common = {
+            "queries": n_queries,
+            "retriever": retriever,
+            "budget": BUDGET_TOKENS,
+            "conf": adjusted_confidence(comparisons),
+            "m": comparisons,
         }
-        m = Measured(top.candidate.value, [("bench.chunking.changed", params)], changed=True)
-    else:
+        better = []
+        for e in others:
+            gap = boot.difference(_budget(e), _budget(rule_entry), comparisons)
+            if gap.ci[0] > 0:
+                better.append((mean(_budget(e)), e, gap))
+        if better:
+            _, top, gap = max(better, key=lambda t: t[0])
+            params = {
+                **common,
+                "winner": top.candidate.label,
+                "score": _r(mean(_budget(top))),
+                "rule": rule_label,
+                "score_rule": _r(mean(_budget(rule_entry))),
+                "gap": _r(gap.mean),
+                "low": _r(gap.ci[0]),
+                "high": _r(gap.ci[1]),
+            }
+            return Measured(top.candidate.value, [("bench.chunking.changed", params)], changed=True)
         score = boot.interval(_budget(rule_entry))
         params = {
             **common,
-            "config": rule_entry.label,
-            "score": score.mean,
-            "low": score.ci[0],
-            "high": score.ci[1],
+            "config": rule_label,
+            "score": _r(score.mean),
+            "low": _r(score.ci[0]),
+            "high": _r(score.ci[1]),
         }
-        params = {key: (_r(v) if isinstance(v, float) else v) for key, v in params.items()}
-        m = Measured(
+        return Measured(
             rule_entry.candidate.value,
             [("bench.chunking.confirmed", params)],
             changed=False,
             basis="rule-based",
         )
-    decide(f"chunking.{group}", rule_entry.candidate.value, m)
-    chosen = measured[f"chunking.{group}"].value
-    chosen_label = f"{chosen['strategy']} {chosen['size']}/{chosen['overlap']}"
 
-    # Retriever: nDCG@k of the three on the chosen chunking. An option that loses significantly to
-    # the best is never returned; with copied query words BM25 alone is not eligible.
-    rule_retriever = rec("retrieval.retriever").value
-    if "hybrid" in retrievers:
-        options = {r: by_label[f"{chosen_label} · {r}"] for r in ("bm25", "dense", "hybrid")}
+    def retriever_on(label: str) -> tuple[Measured, Entry]:
+        """nDCG@k of the three retrievers on one chunking. An option that loses significantly to the
+        best is never returned; with copied query words BM25 alone is not eligible."""
+        rule_retriever = rec("retrieval.retriever").value
+        if "hybrid" not in retrievers:
+            m = Measured(
+                rule_retriever, [("bench.retriever.unavailable", {})], changed=False, basis="rule-based"
+            )
+            return m, by_label[f"{label} · bm25"]
+        options = {r: by_label[f"{label} · {r}"] for r in ("bm25", "dense", "hybrid")}
         scores = {r: _r(mean(_ndcg(e))) for r, e in options.items()}
         lexical = overlap >= OVERLAP_WARNING
         eligible = ["dense", "hybrid"] if lexical else list(options)
@@ -946,11 +924,49 @@ def _decide(analysis, entries, configs, retrievers, k, boot, n_queries, overlap=
             if choice != top:
                 parts.append(("bench.retriever.prefer_hybrid", {}))
             m = Measured(choice, parts, changed=rule_retriever != choice)
-        final = options[m.value] if m.value in options else options[top]
-    else:
-        m = Measured(rule_retriever, [("bench.retriever.unavailable", {})], changed=False, basis="rule-based")
-        final = by_label[f"{chosen_label} · bm25"]
-    decide("retrieval.retriever", rule_retriever, m)
+        return m, options[m.value] if m.value in options else options[top]
+
+    def label_of(value: dict) -> str:
+        return f"{value['strategy']} {value['size']}/{value['overlap']}"
+
+    # Chunkings are compared with the retriever the rules deploy; if the measurement then picks
+    # another retriever, the comparison is repeated once with it so both decisions agree.
+    rule_retriever = rec("retrieval.retriever").value
+    compared = rule_retriever if rule_retriever in retrievers else retrievers[-1]
+    m_chunking = chunking(compared)
+    m_retriever, final = retriever_on(label_of(m_chunking.value))
+    if final.retriever != compared:
+        compared = final.retriever
+        again = chunking(compared)
+        if again.value != m_chunking.value:
+            m_retriever, final = retriever_on(label_of(again.value))
+        m_chunking = again
+    if final.retriever != compared:
+        m_chunking.parts.append(
+            ("bench.chunking.other_retriever", {"compared": compared, "deployed": final.retriever})
+        )
+
+    measured: dict[str, Measured] = {}
+    decisions: list[BenchDecision] = []
+
+    def decide(key, rule_value, m: Measured):
+        measured[key] = m
+        texts, parts = _render(m.parts)
+        decisions.append(
+            BenchDecision(
+                key=key,
+                basis=m.basis,
+                rule_value=rule_value,
+                measured_value=m.value,
+                changed=m.changed,
+                reason=texts["en"],
+                reason_i18n=texts,
+                reason_parts=parts,
+            )
+        )
+
+    decide(f"chunking.{group}", by_label[f"{rule_label} · {retrievers[0]}"].candidate.value, m_chunking)
+    decide("retrieval.retriever", rule_retriever, m_retriever)
 
     # Top-k: the smallest k that keeps 95% of recall@10 with the retriever that will be used. It can
     # go up or down; rules keep it under the context budget and the index size.
@@ -975,6 +991,24 @@ def _decide(analysis, entries, configs, retrievers, k, boot, n_queries, overlap=
         else:
             m = Measured(rule_k, [("bench.top_k.confirmed", params)], changed=False)
     decide("retrieval.top_k", {"final": rule_k}, m)
+
+    # The winner is what gets recommended; the best score on the headline metric is reported apart.
+    ordered = sorted(entries, key=lambda e: -mean(_ndcg(e)))
+    best, second = ordered[0], (ordered[1] if len(ordered) > 1 else None)
+    margin = boot.difference(_ndcg(best), _ndcg(second)) if second else None
+    winner = BenchWinner(
+        label=final.label,
+        chunking={"value": m_chunking.value, "basis": m_chunking.basis},
+        retriever={"value": final.retriever, "basis": m_retriever.basis},
+        top_k={"value": measured["retrieval.top_k"].value, "basis": measured["retrieval.top_k"].basis},
+        top_by_metric=TopByMetric(
+            metric="ndcg",
+            label=best.label,
+            runner_up=second.label if second else None,
+            significant=bool(margin and margin.ci[0] > 0),
+            margin=margin,
+        ),
+    )
     return winner, measured, decisions
 
 
