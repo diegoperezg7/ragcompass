@@ -5,39 +5,56 @@ import { useStore, useT } from "../store";
 import type { Bench, BenchConfig, Interval } from "../types";
 import { Empty, Panel, Segmented, Skeleton, TipRows, useTipProps } from "./ui";
 
-const METRICS = ["recall_at_k", "mrr", "ndcg"] as const;
+const METRICS = ["recall_at_budget", "recall_at_k", "mrr", "ndcg"] as const;
 type Metric = (typeof METRICS)[number];
 const MAX_SERIES = 5;
 
-function metricName(metric: Metric, k: number) {
+function metricName(metric: Metric, k: number, budget?: number) {
+  if (metric === "recall_at_budget") return `Recall@${budget ?? "?"} tok`;
   return metric === "recall_at_k" ? `Recall@${k}` : metric === "mrr" ? "MRR" : `nDCG@${k}`;
 }
 
 const fmt = (i: Interval) => `${i.mean.toFixed(3)} [${i.ci[0].toFixed(2)}, ${i.ci[1].toFixed(2)}]`;
 
-function IntervalBars({ configs, metric, k, winner, colorOf }: { configs: BenchConfig[]; metric: Metric; k: number; winner: string; colorOf: (c: BenchConfig) => string }) {
+function IntervalBars({
+  configs,
+  metric,
+  k,
+  budget,
+  winner,
+  colorOf,
+}: {
+  configs: BenchConfig[];
+  metric: Metric;
+  k: number;
+  budget?: number;
+  winner: string;
+  colorOf: (c: BenchConfig) => string;
+}) {
   const t = useT();
   const tip = useTipProps();
-  const lo = Math.max(0, Math.floor((Math.min(...configs.map((c) => c[metric].ci[0])) - 0.05) * 10) / 10);
+  const value = (c: BenchConfig): Interval => c[metric] ?? { mean: 0, ci: [0, 0] };
+  const name = metricName(metric, k, budget);
+  const lo = Math.max(0, Math.floor((Math.min(...configs.map((c) => value(c).ci[0])) - 0.05) * 10) / 10);
   const x = (v: number) => `${(100 * (v - lo)) / (1 - lo)}%`;
   return (
     <div className="ci-chart">
-      <h4>{metricName(metric, k)}</h4>
+      <h4>{name}</h4>
       <ul>
         {configs.map((c) => (
           <li
             key={c.label}
             className={c.label === winner ? "winner" : ""}
             {...tip(
-              <TipRows title={c.label} rows={[[metricName(metric, k), c[metric].mean.toFixed(3)], [t.ci95, `${c[metric].ci[0].toFixed(3)} – ${c[metric].ci[1].toFixed(3)}`], [t.chunks, String(c.chunks)]]} />,
-              `${c.label} ${metricName(metric, k)} ${fmt(c[metric])}`,
+              <TipRows title={c.label} rows={[[name, value(c).mean.toFixed(3)], [t.ci95, `${value(c).ci[0].toFixed(3)} – ${value(c).ci[1].toFixed(3)}`], [t.chunks, String(c.chunks)]]} />,
+              `${c.label} ${name} ${fmt(value(c))}`,
             )}
           >
             <span className="ci-track">
-              <span className="ci-bar" style={{ width: x(c[metric].mean), background: colorOf(c) }} />
-              <span className="ci-whisker" style={{ left: x(c[metric].ci[0]), width: `calc(${x(c[metric].ci[1])} - ${x(c[metric].ci[0])})` }} />
+              <span className="ci-bar" style={{ width: x(value(c).mean), background: colorOf(c) }} />
+              <span className="ci-whisker" style={{ left: x(value(c).ci[0]), width: `calc(${x(value(c).ci[1])} - ${x(value(c).ci[0])})` }} />
             </span>
-            <span className="ci-value tabular">{c[metric].mean.toFixed(2)}</span>
+            <span className="ci-value tabular">{value(c).mean.toFixed(2)}</span>
           </li>
         ))}
       </ul>
@@ -193,6 +210,7 @@ function Results({ bench }: { bench: Bench }) {
   const margin = bench.winner.margin;
   // The synthetic-queries warning is shown, translated, next to the query quality.
   const warnings = bench.mode === "file" ? bench.warnings : bench.warnings.filter((w) => !w.includes("--queries"));
+  const metrics = METRICS.filter((m) => configs.every((c) => c[m]));
   const n3 = (v: number) => v.toLocaleString(lang, { minimumFractionDigits: 3, maximumFractionDigits: 3 });
   return (
     <>
@@ -221,13 +239,18 @@ function Results({ bench }: { bench: Bench }) {
         </div>
         <div className="winner-meta muted">
           {bench.queries} {t.queriesLower} · seed {bench.seed} · {bench.dense_model ?? "BM25"}
+          {bench.dense_max_tokens ? ` (${bench.dense_max_tokens} ${t.tokPerPass})` : ""}
         </div>
       </div>
       <QueryQuality bench={bench} />
       {warnings.length > 0 && (
-        <p className="inline-warn">
-          <TriangleAlert size={14} aria-hidden /> {warnings.join(" ")}
-        </p>
+        <ul className="warn-list">
+          {warnings.map((w) => (
+            <li key={w} className="inline-warn">
+              <TriangleAlert size={14} aria-hidden /> <span>{w}</span>
+            </li>
+          ))}
+        </ul>
       )}
       <div className="bench-toolbar">
         {retrievers.length > 1 && (
@@ -244,8 +267,8 @@ function Results({ bench }: { bench: Bench }) {
         </div>
       </div>
       <div className="bench-grid">
-        {METRICS.map((m) => (
-          <IntervalBars key={m} configs={configs} metric={m} k={bench.k} winner={bench.winner.label} colorOf={colorOf} />
+        {metrics.map((m) => (
+          <IntervalBars key={m} configs={configs} metric={m} k={bench.k} budget={bench.budget_tokens} winner={bench.winner.label} colorOf={colorOf} />
         ))}
       </div>
       <div className="bench-grid two">

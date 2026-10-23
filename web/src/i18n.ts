@@ -150,7 +150,8 @@ const en = {
   damage: "Damage",
 
   benchmark: "Retrieval benchmark",
-  benchHint: "Recall, MRR and nDCG with 95% bootstrap intervals over generated queries.",
+  benchHint: "Recall within a context budget, recall@k, MRR and nDCG with 95% bootstrap intervals over generated queries.",
+  tokPerPass: "tokens per pass",
   benchEmpty: "No benchmark yet",
   benchEmptyHint: "Generate queries from your files and measure how well each chunking retrieves their source passage.",
   benchRunning: "Generating queries and retrieving with each configuration",
@@ -394,7 +395,8 @@ const es: Dict = {
   damage: "Daño",
 
   benchmark: "Benchmark de recuperación",
-  benchHint: "Recall, MRR y nDCG con intervalos bootstrap del 95% sobre consultas generadas.",
+  benchHint: "Recall dentro de un presupuesto de contexto, recall@k, MRR y nDCG con intervalos bootstrap del 95% sobre consultas generadas.",
+  tokPerPass: "tokens por pasada",
   benchEmpty: "Aún no hay benchmark",
   benchEmptyHint: "Genera consultas a partir de tus ficheros y mide cómo recupera cada chunking su pasaje de origen.",
   benchRunning: "Generando consultas y recuperando con cada configuración",

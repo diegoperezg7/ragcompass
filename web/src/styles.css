@@ -1902,8 +1902,25 @@ kbd {
 
 .bench-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 24px;
+}
+
+.warn-list {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.warn-list .inline-warn {
+  margin: 0;
+}
+
+.inline-warn > svg {
+  flex: none;
+  margin-top: 2px;
 }
 
 .bench-grid.two {

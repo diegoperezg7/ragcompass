@@ -142,6 +142,8 @@ export interface BenchConfig {
   recommended: boolean;
   chunks: number;
   recall_at_k: Interval;
+  /** Span recall within budget_tokens of retrieved context; the chunking decision uses it. */
+  recall_at_budget?: Interval;
   mrr: Interval;
   ndcg: Interval;
   curves: { recall: Record<string, number> };
@@ -169,6 +171,9 @@ export interface Bench {
   lexical_overlap?: { mean: number; by_kind: Record<string, number> };
   retrievers: string[];
   dense_model: string | null;
+  /** Tokens per dense pass; longer chunks are embedded in windows and averaged. */
+  dense_max_tokens?: number | null;
+  budget_tokens?: number;
   warnings: string[];
   primary_metric: "ndcg" | "mrr" | "recall_at_k";
   configs: BenchConfig[];
