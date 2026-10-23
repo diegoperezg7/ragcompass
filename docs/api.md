@@ -194,8 +194,16 @@ The last result, or 404 if no benchmark has run.
       "index_ms": 410.2,
       "query_ms": { "mean": 3.1, "p95": 5.4 }
   } ],
-  "winner": { "label": "heading 256/0 · hybrid", "runner_up": "recursive 256/0 · hybrid",
-              "significant": true, "margin": { "mean": 0.06, "ci": [0.02, 0.10] } },
+  "winner": {                                  // what the benchmark recommends, not the top score
+    "label": "heading 256/0 · hybrid",
+    "chunking": { "value": { "strategy": "heading", "size": 256, "overlap": 0 }, "basis": "rule-based" },
+    "retriever": { "value": "hybrid", "basis": "measured" },
+    "top_k": { "value": 3, "basis": "measured" },
+    "top_by_metric": {                         // highest nDCG@k, which may not be recommended
+      "metric": "ndcg", "label": "recursive 1024/102 · hybrid", "runner_up": "heading 512/0 · bm25",
+      "significant": false, "margin": { "mean": 0.008, "ci": [-0.02, 0.04] }
+    }
+  },
   "decisions": [ {
       "key": "chunking.documents",             // also retrieval.retriever and retrieval.top_k
       "basis": "measured",                     // "rule-based" when no option wins significantly, or nothing could be measured
@@ -215,7 +223,8 @@ as gain the share of the span a chunk newly covers (duplicates add nothing and c
 contains the whole span scores 1). `mrr` is the reciprocal rank of the first overlapping chunk.
 `sample_queries[].start/end` are UTF-16 offsets into the `text` of that file in the chunk explorer.
 
-Decisions: chunking on `recall_at_budget` (Bonferroni-adjusted for the number of candidates), retriever on `ndcg`
+Decisions: chunking on `recall_at_budget` (Bonferroni-adjusted for the number of candidates), compared with the
+retriever the rules deploy and compared again with the measured one if the retriever changes, retriever on `ndcg`
 among bm25, dense and hybrid (never an option that loses significantly to the best; BM25 alone not eligible when
 `lexical_overlap.mean >= 0.6`), top-k as the smallest k reaching 95% of recall@10, up or down. `query_ms` includes
 the query embedding for dense and hybrid; `index_ms` is measured after a warm-up and without cache.
