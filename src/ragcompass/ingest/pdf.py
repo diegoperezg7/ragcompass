@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections import Counter
 from pathlib import Path
 
@@ -28,21 +29,25 @@ def _image_boxes(page) -> list:
     return boxes
 
 
-def _span_text(block: dict) -> tuple[str, float, bool, int]:
-    """Text, largest font size, all-bold flag and line count of a text block."""
-    lines = []
-    sizes = []
-    bold = True
+def _segments(block: dict) -> list[tuple[str, float, bool, int]]:
+    """Split a text block into runs of lines that share font size and weight.
+
+    PyMuPDF often returns a heading and the paragraph under it as one block.
+    Each run is (text, font size, all bold, line count).
+    """
+    runs: list[tuple[list[str], float, bool]] = []
     for line in block["lines"]:
-        parts = []
-        for span in line["spans"]:
-            if span["text"].strip():
-                sizes.append(span["size"])
-                bold = bold and bool(span["flags"] & 16)
-            parts.append(span["text"])
-        lines.append("".join(parts).strip())
-    lines = [line for line in lines if line]
-    return "\n".join(lines), max(sizes, default=0.0), bold and bool(sizes), len(lines)
+        spans = [span for span in line["spans"] if span["text"].strip()]
+        if not spans:
+            continue
+        text = unicodedata.normalize("NFKC", "".join(span["text"] for span in line["spans"])).strip()
+        size = round(max(span["size"] for span in spans), 1)
+        bold = all(span["flags"] & 16 for span in spans)
+        if runs and runs[-1][1] == size and runs[-1][2] == bold:
+            runs[-1][0].append(text)
+        else:
+            runs.append(([text], size, bold))
+    return [("\n".join(lines), size, bold, len(lines)) for lines, size, bold in runs]
 
 
 def extract(path: Path):
@@ -50,6 +55,7 @@ def extract(path: Path):
 
     from ragcompass.ingest import Extracted
 
+    pymupdf.no_recommend_layout()  # it prints to stdout, which would corrupt --json output
     document = pymupdf.open(path)
     pages: list[tuple[int, list[tuple[float, float, Block | dict]]]] = []
     size_weights: Counter[float] = Counter()
@@ -79,6 +85,12 @@ def extract(path: Path):
                     tables.append((pymupdf.Rect(table.bbox), rows))
         except Exception:
             tables = []
+        # find_tables can report a cell of a larger table as a table of its own.
+        tables = [
+            (rect, rows)
+            for i, (rect, rows) in enumerate(tables)
+            if not any(j != i and other.contains(rect) for j, (other, _) in enumerate(tables))
+        ]
 
         items: list[tuple[float, float, Block | dict]] = []
         for rect, rows in tables:
@@ -88,12 +100,10 @@ def extract(path: Path):
             centre = pymupdf.Point((rect.x0 + rect.x1) / 2, (rect.y0 + rect.y1) / 2)
             if any(centre in table_rect for table_rect, _ in tables):
                 continue
-            text, size, bold, lines = _span_text(block)
-            if not text:
-                continue
-            size_weights[round(size, 1)] += len(text)
-            items.append((rect.y0, rect.x0, {"text": text, "size": size, "bold": bold, "lines": lines}))
-        items.sort(key=lambda item: (item[0], item[1]))
+            for text, size, bold, lines in _segments(block):
+                size_weights[size] += len(text)
+                items.append((rect.y0, rect.x0, {"text": text, "size": size, "bold": bold, "lines": lines}))
+        items.sort(key=lambda item: (item[0], item[1]))  # stable: segments keep block order
         pages.append((number, items))
 
     body_size = size_weights.most_common(1)[0][0] if size_weights else 0.0

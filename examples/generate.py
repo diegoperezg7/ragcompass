@@ -108,7 +108,7 @@ code, follow the table in this section and only then open the enclosure.</p>
 <p>When none of these codes is shown and the readings are still unstable, check the grounding of
 the bench first. A floating ground can add noise of several microvolts on the lower ranges, which
 looks like a fault in the instrument but disappears as soon as the bench is bonded to earth.</p>
-<img src="wiring-diagram.png" width="380"/>
+<p><img src="wiring-diagram.png" width="380" height="199"/></p>
 <p>Figure 1. Simplified wiring of the output stage, with relay K1 between the reference board and
 terminals T1 and T2.</p>
 

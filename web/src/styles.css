@@ -533,10 +533,14 @@ tr.picked td:first-child {
   min-width: 170px;
 }
 
-td.damage-col {
+.damage {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.damage .num {
+  min-width: 44px;
 }
 
 .bar {

@@ -199,10 +199,12 @@ function Simulation({ report }: { report: ReportData }) {
                 <td className="num">{r.orphan_heading_pct}%</td>
                 <td className="num">{r.tiny_pct}%</td>
                 <td className="damage-col">
-                  <div className="bar">
-                    <span style={{ width: `${(100 * r.damage) / maxDamage}%` }} />
+                  <div className="damage">
+                    <div className="bar">
+                      <span style={{ width: `${(100 * r.damage) / maxDamage}%` }} />
+                    </div>
+                    <span className="num">{r.damage}</span>
                   </div>
-                  <span className="num">{r.damage}</span>
                 </td>
               </tr>
             ))}

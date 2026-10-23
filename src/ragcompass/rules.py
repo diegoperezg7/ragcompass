@@ -88,6 +88,10 @@ class Plan:
         self.recommendations.append(Recommendation(key=key, value=value, reason=reason, evidence=evidence))
 
 
+def n(count: int, noun: str) -> str:
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
 def smallest_size_at_least(tokens: float) -> int:
     for size in SIZES:
         if size >= tokens:
@@ -152,25 +156,31 @@ def _parser_rules(plan: Plan, profiles: list[DocProfile]) -> dict[str, str]:
         names = len(docs)
         if kind == DocKind.PDF_TEXT:
             per_page = round(sum(p.chars for p in docs) / pages) if pages else 0
-            reason = f"{pages} pages with a usable text layer (avg {per_page} chars/page); no OCR needed."
+            reason = (
+                f"{n(pages, 'page')} with a usable text layer (avg {per_page} chars/page); no OCR needed."
+            )
         elif kind in (DocKind.PDF_SCANNED, DocKind.PDF_MIXED):
             scanned = sum(p.scanned_pages for p in docs)
             reason = (
-                f"{scanned} of {pages} pages have under 25 characters of text and a page-wide image: "
-                "they are scans and need OCR before chunking."
+                f"{scanned} of {n(pages, 'page')} {'has' if scanned == 1 else 'have'} under 25 characters of text "
+                "and a page-wide image: "
+                "scans need OCR before chunking."
             )
         elif kind == DocKind.IMAGE:
-            reason = f"{names} image file(s) with no text layer; a VLM caption or OCR is the only way to index them."
+            reason = (
+                f"{n(names, 'image')} with no text layer; a VLM caption or OCR is the only way to index them."
+            )
         elif kind in (DocKind.CSV, DocKind.XLSX):
             rows = sum(p.table_rows for p in docs)
             reason = f"{rows} data rows; serializing each row with its header keeps values attached to column names."
         elif kind == DocKind.CODE:
-            reason = f"{names} source file(s); splitting on definitions keeps functions whole."
+            reason = f"{n(names, 'source file')}; splitting on definitions keeps functions whole."
         else:
             headings = sum(p.headings for p in docs)
             tables = sum(p.tables for p in docs)
             reason = (
-                f"{names} file(s) with {headings} headings and {tables} tables; the parser preserves both."
+                f"{n(names, 'file')} with {n(headings, 'heading')} and {n(tables, 'table')}; "
+                "the parser preserves both."
             )
         figures = sum(p.images for p in docs)
         if pages and kind.value.startswith("pdf") and figures / pages >= FIGURES_PER_PAGE_VLM:
@@ -280,7 +290,7 @@ def recommend(profiles: list[DocProfile], docs: list[Doc], sims: list[Simulation
         parts.append(f"{images} image captions")
     if scan_vectors:
         parts.append(
-            f"~{scan_vectors} estimated for {scanned} scanned pages at {SCANNED_PAGE_TOKENS} tokens/page after OCR"
+            f"~{scan_vectors} estimated for {n(scanned, 'scanned page')} at {SCANNED_PAGE_TOKENS} tokens/page after OCR"
         )
     plan.add(
         "vectors",

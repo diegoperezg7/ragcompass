@@ -48,16 +48,16 @@ def _fixed_span(layout: Layout, start: int, end: int, size: int) -> list[tuple[i
 
 def _pieces(text: str, start: int, end: int, separator: str) -> list[tuple[int, int]]:
     pieces = []
-    cursor = start
+    position = start
     while True:
-        found = text.find(separator, cursor, end)
+        found = text.find(separator, position, end)
         if found == -1:
             break
         cut = found + len(separator)
-        pieces.append((cursor, cut))
-        cursor = cut
-    if cursor < end:
-        pieces.append((cursor, end))
+        pieces.append((position, cut))
+        position = cut
+    if position < end:
+        pieces.append((position, end))
     return pieces
 
 

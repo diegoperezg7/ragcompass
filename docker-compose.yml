@@ -1,0 +1,11 @@
+services:
+  ragcompass:
+    build: .
+    image: ragcompass:latest
+    ports:
+      - "8460:8460"
+    environment:
+      RAGCOMPASS_MAX_UPLOAD_MB: "50"
+      # Optional LLM summary (off unless a request asks for it):
+      # OLLAMA_HOST: "http://host.docker.internal:11434"
+    restart: unless-stopped
