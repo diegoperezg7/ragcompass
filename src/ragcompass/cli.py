@@ -10,7 +10,8 @@ from rich.console import Console
 
 from ragcompass import __version__
 from ragcompass.analyze import analyze as run_analysis
-from ragcompass.report import render, to_json, to_markdown, to_yaml
+from ragcompass.messages import LANGUAGES, label
+from ragcompass.report import localize, render, to_json, to_markdown, to_yaml
 from ragcompass.tokens import get_tokenizer
 
 app = typer.Typer(
@@ -34,20 +35,23 @@ def analyze(
     llm_summary: Annotated[
         bool, typer.Option("--llm-summary", help="Add a summary from a local Ollama model.")
     ] = False,
+    lang: Annotated[str, typer.Option(help="Language of the reasons and labels: en or es.")] = "en",
 ) -> None:
     """Profile documents, simulate chunking and recommend a RAG configuration."""
+    if lang not in LANGUAGES:
+        raise typer.BadParameter(f"choose one of: {', '.join(LANGUAGES)}", param_hint="--lang")
     try:
         active = get_tokenizer(tokenizer)
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--tokenizer") from exc
-    report = run_analysis(path, tokenizer=active)
+    report = localize(run_analysis(path, tokenizer=active), lang)
     if llm_summary:
         from ragcompass.llm import summarize
 
         try:
             report.llm_summary = summarize(report)
         except Exception as exc:
-            err.print(f"[yellow]LLM summary skipped: {exc}[/yellow]")
+            err.print(f"[yellow]{label('llm_skipped', lang, error=exc)}[/yellow]")
     if json_out:
         typer.echo(to_json(report))
     elif md_out:
@@ -56,7 +60,7 @@ def analyze(
         render(report, Console(), verbose=all_runs)
     if export:
         export.write_text(to_yaml(report), encoding="utf-8")
-        err.print(f"Configuration written to {export}")
+        err.print(label("written", lang, path=export))
 
 
 @app.command()

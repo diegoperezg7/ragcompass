@@ -79,7 +79,6 @@ const en = {
   } as Record<string, string>,
   yes: "yes",
   no: "no",
-  reasonsNote: "Reasons are generated in English, as in the CLI.",
 };
 
 type Dict = typeof en;
@@ -163,7 +162,6 @@ const es: Dict = {
   },
   yes: "sí",
   no: "no",
-  reasonsNote: "Las razones se generan en inglés, igual que en la CLI.",
 };
 
 export const dictionaries: Record<Lang, Dict> = { en, es };

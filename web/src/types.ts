@@ -48,6 +48,8 @@ export interface Recommendation {
   key: string;
   value: unknown;
   reason: string;
+  reason_i18n: Record<string, string>;
+  reason_parts: { id: string; params: Record<string, unknown> }[];
   evidence: Record<string, unknown>;
 }
 

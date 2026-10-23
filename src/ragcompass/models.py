@@ -96,10 +96,17 @@ class SimulationResult(BaseModel):
     damage: float  # sentence + 3 * table + orphan heading + code cuts + tiny, all in %
 
 
+class ReasonPart(BaseModel):
+    id: str  # message id in ragcompass.messages
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
 class Recommendation(BaseModel):
     key: str
     value: Any
-    reason: str
+    reason: str  # rendered in the report language
+    reason_i18n: dict[str, str] = Field(default_factory=dict)  # rendered in every language
+    reason_parts: list[ReasonPart] = Field(default_factory=list)
     evidence: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -132,6 +139,7 @@ class CorpusSummary(BaseModel):
 class Report(BaseModel):
     generator: str = "ragcompass"  # first key of the JSON output; marks it as ours when re-scanned
     version: str
+    lang: str = "en"
     summary: CorpusSummary
     documents: list[DocProfile]
     simulations: list[SimulationResult]

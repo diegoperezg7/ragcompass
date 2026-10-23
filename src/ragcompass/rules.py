@@ -10,12 +10,14 @@ import math
 from collections import Counter
 from dataclasses import dataclass, field
 
+from ragcompass.messages import LANGUAGES, render_parts
 from ragcompass.models import (
     BlockType,
     DocKind,
     DocProfile,
     EmbeddingCost,
     IndexEstimate,
+    ReasonPart,
     Recommendation,
     SimulationResult,
 )
@@ -88,6 +90,9 @@ PARSERS = {
 FIGURES_PER_PAGE_VLM = 0.5  # above this, figures carry enough content to caption them
 
 
+Part = tuple[str, dict]
+
+
 @dataclass
 class Plan:
     recommendations: list[Recommendation] = field(default_factory=list)
@@ -95,12 +100,21 @@ class Plan:
     costs: list[EmbeddingCost] = field(default_factory=list)
     config: dict = field(default_factory=dict)
 
-    def add(self, key: str, value, reason: str, **evidence) -> None:
-        self.recommendations.append(Recommendation(key=key, value=value, reason=reason, evidence=evidence))
-
-
-def n(count: int, noun: str) -> str:
-    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+    def add(self, key: str, value, parts: list[Part], **evidence) -> None:
+        """Record a setting with its reason, given as message ids and their parameters."""
+        reason_parts = [ReasonPart(id=message_id, params=params) for message_id, params in parts]
+        dumped = [part.model_dump() for part in reason_parts]
+        texts = {lang: render_parts(dumped, lang) for lang in LANGUAGES}
+        self.recommendations.append(
+            Recommendation(
+                key=key,
+                value=value,
+                reason=texts["en"],
+                reason_i18n=texts,
+                reason_parts=reason_parts,
+                evidence=evidence,
+            )
+        )
 
 
 def smallest_size_at_least(tokens: float) -> int:
@@ -167,38 +181,26 @@ def _parser_rules(plan: Plan, profiles: list[DocProfile]) -> dict[str, str]:
         names = len(docs)
         if kind == DocKind.PDF_TEXT:
             per_page = round(sum(p.chars for p in docs) / pages) if pages else 0
-            reason = (
-                f"{n(pages, 'page')} with a usable text layer (avg {per_page} chars/page); no OCR needed."
-            )
+            parts: list[Part] = [("parser.pdf_text", {"pages": pages, "per_page": per_page})]
         elif kind in (DocKind.PDF_SCANNED, DocKind.PDF_MIXED):
             scanned = sum(p.scanned_pages for p in docs)
-            reason = (
-                f"{scanned} of {n(pages, 'page')} {'has' if scanned == 1 else 'have'} under 25 characters of text "
-                "and a page-wide image: "
-                "scans need OCR before chunking."
-            )
+            parts = [("parser.scanned", {"scanned": scanned, "pages": pages})]
         elif kind == DocKind.IMAGE:
-            reason = (
-                f"{n(names, 'image')} with no text layer; a VLM caption or OCR is the only way to index them."
-            )
+            parts = [("parser.image", {"files": names})]
         elif kind in (DocKind.CSV, DocKind.XLSX):
-            rows = sum(p.table_rows for p in docs)
-            reason = f"{rows} data rows; serializing each row with its header keeps values attached to column names."
+            parts = [("parser.tabular", {"rows": sum(p.table_rows for p in docs)})]
         elif kind == DocKind.CODE:
-            reason = f"{n(names, 'source file')}; splitting on definitions keeps functions whole."
+            parts = [("parser.code", {"files": names})]
         else:
             headings = sum(p.headings for p in docs)
             tables = sum(p.tables for p in docs)
-            reason = (
-                f"{n(names, 'file')} with {n(headings, 'heading')} and {n(tables, 'table')}; "
-                "the parser preserves both."
-            )
+            parts = [("parser.structured", {"files": names, "headings": headings, "tables": tables})]
         figures = sum(p.images for p in docs)
         if pages and kind.value.startswith("pdf") and figures / pages >= FIGURES_PER_PAGE_VLM:
             parser += " + VLM captions for figures"
-            reason += f" {figures} figures over {pages} pages is enough to caption them."
+            parts.append(("parser.figures", {"figures": figures, "pages": pages}))
         parsing[kind.value] = parser
-        plan.add(f"parser.{kind.value}", parser, reason, files=names, pages=pages or None)
+        plan.add(f"parser.{kind.value}", parser, parts, files=names, pages=pages or None)
     return parsing
 
 
@@ -218,51 +220,61 @@ def _chunking_rules(
     strategies = sorted({s.strategy for s in sims if s.group == group}, key=PREFERENCE.index)
 
     if group == "tables":
-        rows = row_tokens(docs)
-        median_row = percentile(rows, 50)
+        median_row = percentile(row_tokens(docs), 50)
         size = smallest_size_at_least(median_row * (ROWS_PER_TABLE_CHUNK + 1))
-        size_reason = (
-            f"median row is {median_row} tokens, so {size} fits the header plus {ROWS_PER_TABLE_CHUNK} rows"
+        size_part: Part = (
+            "chunking.size.tables",
+            {"row": median_row, "size": size, "rows": ROWS_PER_TABLE_CHUNK},
         )
     elif group == "code":
         size = CODE_SIZE
-        size_reason = f"{CODE_SIZE} tokens fits a typical function with its signature and docstring"
+        size_part = ("chunking.size.code", {"size": CODE_SIZE})
     else:
         structured = token_share(docs, has_headings)
         sections = section_tokens(docs)
         if structured >= STRUCTURE_SHARE and sections:
             median = percentile(sections, 50)
             size = smallest_size_at_least(median)
-            share = round(100 * structured)
-            size_reason = (
-                f"{share}% of the text sits under headings and the median section is {median} tokens"
-            )
+            size_part = ("chunking.size.structured", {"share": round(100 * structured), "median": median})
         elif density[1] >= HYBRID_CODES_PER_1K:
             size = DENSE_ID_PROSE_SIZE
-            size_reason = f"{density[1]} codes per 1k tokens: small chunks keep one fact per vector"
+            size_part = ("chunking.size.dense_ids", {"codes": density[1]})
         else:
             size = DEFAULT_PROSE_SIZE
-            size_reason = "unstructured prose with few identifiers; 512 is a balanced default"
+            size_part = ("chunking.size.default", {})
 
     candidates = [results[(s, size, _overlap_for(results, s, size))] for s in strategies]
     best = min(candidates, key=lambda r: (r.damage, PREFERENCE.index(r.strategy)))
     fixed = results[("fixed", size, 0)]
-    others = ", ".join(f"{c.strategy} {c.damage}" for c in candidates if c is not best)
-    reason = (
-        f"{size_reason}. At {size} tokens, {best.strategy} has the lowest damage score "
-        f"({best.damage}: {best.sentence_cut_pct}% sentence cuts, {best.table_cut_pct}% table cuts, "
-        f"{best.orphan_heading_pct}% orphan headings, {best.tiny_pct}% tiny chunks) against {others}."
-    )
+    parts: list[Part] = [
+        size_part,
+        (
+            "chunking.pick",
+            {
+                "size": size,
+                "strategy": best.strategy,
+                "damage": best.damage,
+                "sentence": best.sentence_cut_pct,
+                "table": best.table_cut_pct,
+                "orphan": best.orphan_heading_pct,
+                "code": best.code_cut_pct,
+                "tiny": best.tiny_pct,
+                "others": [[c.strategy, c.damage] for c in candidates if c is not best],
+            },
+        ),
+    ]
     if best.overlap:
         no_overlap = results[(best.strategy, size, 0)]
-        reason += (
-            f" Overlap {best.overlap} tokens because {no_overlap.sentence_cut_pct}% of chunks cut a "
-            f"sentence without it (+{best.overhead_pct}% tokens embedded)."
+        parts.append(
+            (
+                "chunking.overlap",
+                {"overlap": best.overlap, "cuts": no_overlap.sentence_cut_pct, "overhead": best.overhead_pct},
+            )
         )
     plan.add(
         f"chunking.{group}",
         {"strategy": best.strategy, "size": size, "overlap": best.overlap},
-        reason,
+        parts,
         chunks=best.chunks,
         damage=best.damage,
         fixed_baseline_damage=fixed.damage,
@@ -298,21 +310,14 @@ def recommend(profiles: list[DocProfile], docs: list[Doc], sims: list[Simulation
     embedded_tokens = (
         sum(r.total_tokens for r in chosen.values()) + scanned * SCANNED_PAGE_TOKENS + images * CAPTION_TOKENS
     )
-    parts = [f"{simulated} chunks measured by the simulation"]
+    parts: list[Part] = [("vectors.simulated", {"chunks": simulated})]
     if images:
-        parts.append(f"{n(images, 'image caption')} (~{CAPTION_TOKENS} tokens each)")
+        parts.append(("vectors.captions", {"images": images, "tokens": CAPTION_TOKENS}))
     if scan_vectors:
         parts.append(
-            f"~{scan_vectors} estimated for {n(scanned, 'scanned page')} at {SCANNED_PAGE_TOKENS} tokens/page after OCR"
+            ("vectors.scans", {"vectors": scan_vectors, "pages": scanned, "tokens": SCANNED_PAGE_TOKENS})
         )
-    plan.add(
-        "vectors",
-        vectors,
-        " + ".join(parts) + ".",
-        simulated=simulated,
-        images=images,
-        scanned_estimate=scan_vectors,
-    )
+    plan.add("vectors", vectors, parts, simulated=simulated, images=images, scanned_estimate=scan_vectors)
 
     # Embedding dimension and quantization.
     multilingual = sum(1 for t in languages.values() if text_tokens and t / text_tokens >= 0.1) > 1
@@ -320,18 +325,15 @@ def recommend(profiles: list[DocProfile], docs: list[Doc], sims: list[Simulation
     corpus_tokens = sum(p.tokens for p in usable)
     if not languages:
         dimension, models = None, []
-        dim_reason = (
-            f"insufficient evidence: no language could be detected in {corpus_tokens:,} tokens of text; "
-            "decide after OCR."
-        )
+        dim_part: Part = ("embedding.dimension.undecided", {"tokens": corpus_tokens})
     elif multilingual or main_language != "en":
         dimension, models = 1024, ["bge-m3", "multilingual-e5-large"]
-        mix = ", ".join(f"{lang} {round(100 * t / text_tokens)}%" for lang, t in languages.items())
-        dim_reason = f"text is not English-only ({mix}); multilingual models at 1024 dims handle it."
+        mix = [[lang, f"{round(100 * t / text_tokens)}%"] for lang, t in languages.items()]
+        dim_part = ("embedding.dimension.multilingual", {"mix": mix})
     else:
         dimension, models = 768, ["nomic-embed-text", "bge-base-en-v1.5"]
-        dim_reason = "English-only text; 768-dim models give strong recall at half the storage of 1536."
-    plan.add("embedding.dimension", dimension, dim_reason, models=models, languages=languages)
+        dim_part = ("embedding.dimension.english", {})
+    plan.add("embedding.dimension", dimension, [dim_part], models=models, languages=languages)
 
     for dim in DIMENSIONS:
         plan.index.append(
@@ -347,17 +349,14 @@ def recommend(profiles: list[DocProfile], docs: list[Doc], sims: list[Simulation
     float32_total = chosen_index.float32_bytes + chosen_index.hnsw_overhead_bytes if chosen_index else None
     if chosen_index is None:
         quantization = None
-        q_reason = "insufficient evidence: the dimension is not decided yet; decide after OCR."
+        q_part: Part = ("embedding.quantization.undecided", {})
     elif float32_total > INT8_THRESHOLD_BYTES:
         quantization = "int8"
-        q_reason = f"float32 index at {dimension} dims is {human_bytes(float32_total)}; int8 cuts vectors 4x."
+        q_part = ("embedding.quantization.int8", {"dimension": dimension, "size": float32_total})
     else:
         quantization = "float32"
-        q_reason = (
-            f"float32 index at {dimension} dims is {human_bytes(float32_total)}, well under 1 GiB; "
-            "quantization would trade recall for memory you do not need to save."
-        )
-    plan.add("embedding.quantization", quantization, q_reason, index_bytes=float32_total)
+        q_part = ("embedding.quantization.float32", {"dimension": dimension, "size": float32_total})
+    plan.add("embedding.quantization", quantization, [q_part], index_bytes=float32_total)
 
     for model, price in EMBEDDING_PRICES.items():
         plan.costs.append(
@@ -372,8 +371,7 @@ def recommend(profiles: list[DocProfile], docs: list[Doc], sims: list[Simulation
     plan.add(
         "embedding.cost",
         f"${priciest.usd:.4f} max",
-        f"{embedded_tokens:,} tokens to embed (overlap and repeated headers included); "
-        f"local models cost nothing, the largest hosted model costs ${priciest.usd:.4f} per full index.",
+        [("embedding.cost", {"tokens": embedded_tokens, "usd": priciest.usd})],
         tokens=embedded_tokens,
     )
 
@@ -381,58 +379,48 @@ def recommend(profiles: list[DocProfile], docs: list[Doc], sims: list[Simulation
     hybrid = density[1] >= HYBRID_CODES_PER_1K or density[0] >= HYBRID_IDS_PER_1K
     if not corpus_tokens:
         hybrid = None
-        h_reason = "insufficient evidence: there is no text to measure identifiers in; decide after OCR."
-    elif hybrid:
-        h_reason = (
-            f"{density[1]} codes and {density[0]} identifiers per 1k tokens: exact tokens like SKUs "
-            "and dates are matched far better by BM25 than by dense vectors."
-        )
+        h_part: Part = ("retrieval.hybrid.undecided", {})
     else:
-        h_reason = f"only {density[1]} codes and {density[0]} identifiers per 1k tokens; dense retrieval alone is enough."
-    plan.add("retrieval.hybrid_bm25", hybrid, h_reason, ids_per_1k=density[0], codes_per_1k=density[1])
+        h_part = (
+            "retrieval.hybrid.yes" if hybrid else "retrieval.hybrid.no",
+            {"codes": density[1], "ids": density[0]},
+        )
+    plan.add("retrieval.hybrid_bm25", hybrid, [h_part], ids_per_1k=density[0], codes_per_1k=density[1])
 
     # Size top-k for the largest chunks any group produces, so the budget holds whatever is retrieved.
     largest = max((r.size for r in chosen.values()), default=DEFAULT_PROSE_SIZE)
     top_k = max(1, min(MAX_TOP_K, CONTEXT_BUDGET // largest, vectors or 1))
     rerank = vectors >= RERANK_MIN_VECTORS
     candidates = min(top_k * RERANK_CANDIDATES, vectors) if rerank else top_k
-    k_reason = f"a {CONTEXT_BUDGET:,}-token context budget over chunks of up to {largest} tokens fits {top_k}"
+    parts = [("retrieval.top_k", {"budget": CONTEXT_BUDGET, "largest": largest, "k": top_k})]
     if top_k == vectors:
-        k_reason += ", which is every vector in the index"
-    plan.add(
-        "retrieval.top_k",
-        {"candidates": candidates, "final": top_k},
-        k_reason + (f"; retrieve {candidates} so the reranker has room to reorder." if rerank else "."),
-        largest_chunk=largest,
-    )
+        parts.append(("retrieval.top_k.all", {}))
     if rerank:
-        r_reason = (
-            f"{vectors:,} vectors is past {RERANK_MIN_VECTORS:,}: the first page of dense results fills with "
-            f"near-miss neighbours, and a cross-encoder over {candidates} candidates restores precision."
-        )
-    else:
-        r_reason = (
-            f"{vectors:,} vectors is below {RERANK_MIN_VECTORS:,}: a top-{top_k} from the index is precise "
-            "enough, and a reranker would add one model call per candidate. Add one if evaluation shows misses."
-        )
-    plan.add("retrieval.reranker", "bge-reranker-v2-m3" if rerank else False, r_reason)
+        parts.append(("retrieval.top_k.rerank", {"candidates": candidates}))
+    plan.add("retrieval.top_k", {"candidates": candidates, "final": top_k}, parts, largest_chunk=largest)
+    r_params = {"vectors": vectors, "threshold": RERANK_MIN_VECTORS, "candidates": candidates, "k": top_k}
+    plan.add(
+        "retrieval.reranker",
+        "bge-reranker-v2-m3" if rerank else False,
+        [("retrieval.reranker.yes" if rerank else "retrieval.reranker.no", r_params)],
+    )
 
     # Metadata.
-    fields = {"source": "every chunk must cite its file", "chunk_index": "lets you expand to neighbours"}
+    fields: list[Part] = [("metadata.source", {}), ("metadata.chunk_index", {})]
     if any(p.pages for p in usable):
-        fields["page"] = "paged sources: citations point to a page"
+        fields.append(("metadata.page", {}))
     if any(r.strategy == "heading" for r in chosen.values()) or any(p.headings for p in usable):
-        fields["heading_path"] = "headings give the chunk its context and a filter"
+        fields.append(("metadata.heading_path", {}))
     if "tables" in groups:
-        fields["sheet"] = "workbooks: keep which sheet a row came from"
-        fields["row_range"] = "tables: cite the exact rows"
+        fields += [("metadata.sheet", {}), ("metadata.row_range", {})]
     if multilingual:
-        fields["language"] = "mixed languages: filter or route by language"
+        fields.append(("metadata.language", {}))
     if density[2] >= DATE_FIELD_PER_1K:
-        fields["dates"] = f"{density[2]} dates per 1k tokens: extract them for time filters"
+        fields.append(("metadata.dates", {"dates": density[2]}))
     if len(groups) > 1 or images:
-        fields["doc_kind"] = "mixed formats: filter tables, prose and captions separately"
-    plan.add("metadata", list(fields), "; ".join(f"{k}: {v}" for k, v in fields.items()) + ".")
+        fields.append(("metadata.doc_kind", {}))
+    names = [message_id.split(".", 1)[1] for message_id, _ in fields]
+    plan.add("metadata", names, fields)
 
     plan.config = {
         "parsing": parsing,
@@ -457,14 +445,6 @@ def recommend(profiles: list[DocProfile], docs: list[Doc], sims: list[Simulation
             "hybrid_bm25": hybrid,
             "reranker": "bge-reranker-v2-m3" if rerank else None,
         },
-        "metadata": list(fields),
+        "metadata": names,
     }
     return plan
-
-
-def human_bytes(value: float) -> str:
-    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
-        if value < 1024 or unit == "TiB":
-            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
-        value /= 1024
-    return f"{value:.1f} TiB"

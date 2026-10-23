@@ -149,3 +149,21 @@ def test_analysis_does_not_block_health(monkeypatch):
 
     # health answers while the slow analysis is still running
     assert asyncio.run(scenario()) == ["health", "analysis"]
+
+
+def test_cli_lang_option():
+    result = CliRunner().invoke(cli, ["analyze", str(CORPUS / "product-catalog.csv"), "--md", "--lang", "es"])
+    assert result.exit_code == 0, result.output
+    assert "## Recomendaciones" in result.stdout
+    assert "filas de datos" in result.stdout
+    bad = CliRunner().invoke(cli, ["analyze", str(CORPUS / "product-catalog.csv"), "--lang", "fr"])
+    assert bad.exit_code == 2
+
+
+def test_api_lang_parameter():
+    report = client.post("/api/sample?lang=es").json()
+    assert report["lang"] == "es"
+    parser = next(r for r in report["recommendations"] if r["key"] == "parser.csv")
+    assert parser["reason"] == parser["reason_i18n"]["es"]
+    rendered = client.post("/api/render?format=md&lang=en", json=report).text
+    assert "## Recommendations" in rendered

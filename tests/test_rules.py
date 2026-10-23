@@ -127,7 +127,7 @@ def test_no_text_means_insufficient_evidence():
     report = analyze(CORPUS / "scanned-invoice.pdf", tokenizer=RegexTokenizer())
     for key in ("embedding.dimension", "embedding.quantization", "retrieval.hybrid_bm25"):
         assert rec(report, key).value is None
-        assert "insufficient evidence" in rec(report, key).reason
+        assert "insufficient evidence" in rec(report, key).reason.lower()
         assert "after OCR" in rec(report, key).reason
 
 

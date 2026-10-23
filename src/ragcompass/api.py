@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from ragcompass import __version__
 from ragcompass.analyze import analyze
 from ragcompass.models import Report
-from ragcompass.report import to_markdown, to_yaml
+from ragcompass.report import localize, to_markdown, to_yaml
 
 MAX_UPLOAD_BYTES = int(os.environ.get("RAGCOMPASS_MAX_UPLOAD_MB", "50")) * 1024 * 1024
 MAX_FILES = 500
@@ -25,6 +25,7 @@ REPO = Path(__file__).resolve().parents[2]
 WEB_DIST = Path(os.environ.get("RAGCOMPASS_WEB_DIST", REPO / "web" / "dist"))
 SAMPLE_DIR = Path(os.environ.get("RAGCOMPASS_SAMPLE_DIR", REPO / "examples" / "corpus"))
 Format = Literal["json", "md", "yaml"]
+Lang = Literal["en", "es"]
 
 
 class BodyLimit:
@@ -98,6 +99,7 @@ async def analyze_upload(
     files: Annotated[list[UploadFile], File(description="Files; folder uploads keep relative paths.")],
     format: Annotated[Format, Query()] = "json",
     llm_summary: Annotated[bool, Query()] = False,
+    lang: Annotated[Lang, Query()] = "en",
 ) -> Report | PlainTextResponse:
     if not files:
         raise HTTPException(400, "no files uploaded")
@@ -129,26 +131,33 @@ async def analyze_upload(
         label = source.name if source != root else "upload"
         # Parsing and chunking are CPU-bound; keep the event loop free for other requests.
         report = await run_in_threadpool(analyze, source, None, label)
-    return await run_in_threadpool(respond, report, format, llm_summary)
+    return await run_in_threadpool(respond, report, format, llm_summary, lang)
 
 
 @app.post("/api/sample", response_model=None)
 def analyze_sample(
-    format: Annotated[Format, Query()] = "json", llm_summary: Annotated[bool, Query()] = False
+    format: Annotated[Format, Query()] = "json",
+    llm_summary: Annotated[bool, Query()] = False,
+    lang: Annotated[Lang, Query()] = "en",
 ) -> Report | PlainTextResponse:
     """Analyse the bundled sample corpus."""
     if not SAMPLE_DIR.is_dir():
         raise HTTPException(404, "sample corpus not available")
-    return respond(analyze(SAMPLE_DIR, label="sample-corpus"), format, llm_summary)
+    return respond(analyze(SAMPLE_DIR, label="sample-corpus"), format, llm_summary, lang)
 
 
 @app.post("/api/render")
-def render_report(report: Report, format: Annotated[Literal["md", "yaml"], Query()]) -> PlainTextResponse:
+def render_report(
+    report: Report,
+    format: Annotated[Literal["md", "yaml"], Query()],
+    lang: Annotated[Lang, Query()] = "en",
+) -> PlainTextResponse:
     """Turn a report the client already has into Markdown or YAML for download."""
-    return respond(report, format, False)
+    return respond(report, format, False, lang)
 
 
-def respond(report: Report, format: str, llm_summary: bool) -> Report | PlainTextResponse:
+def respond(report: Report, format: str, llm_summary: bool, lang: str = "en") -> Report | PlainTextResponse:
+    localize(report, lang)
     if llm_summary:
         from ragcompass.llm import summarize
 

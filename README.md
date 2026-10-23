@@ -46,7 +46,9 @@ machine.
 | **Metadata to store** | Pages, headings, sheets, languages, date density |
 
 The output is a terminal report, JSON, Markdown, and a `ragcompass.yaml` you can feed into your ingestion code
-([sample](examples/ragcompass.yaml), [full report](examples/report.md)).
+([sample](examples/ragcompass.yaml), [full report](examples/report.md)). Reasons are stored as message ids with
+their parameters and rendered in English or Spanish; the JSON carries the ids, the parameters and the text in both
+languages.
 
 ## Web app
 
@@ -140,6 +142,7 @@ uv run ragcompass analyze examples/corpus --md       # Markdown
 uv run ragcompass analyze examples/corpus --json     # full report, all simulations included
 uv run ragcompass analyze ./my-docs -o ragcompass.yaml
 uv run ragcompass analyze ./my-docs --all            # every simulated configuration
+uv run ragcompass analyze ./my-docs --lang es        # reasons and labels in Spanish
 ```
 
 Web app and API in one container, on <http://localhost:8460>:
@@ -157,7 +160,7 @@ cd web && npm install && npm run dev    # web on :5460, proxies /api
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /api/analyze?format=json\|md\|yaml` | Multipart upload of files; folder uploads keep relative paths |
+| `POST /api/analyze?format=json\|md\|yaml&lang=en\|es` | Multipart upload of files; folder uploads keep relative paths; bodies over 50 MB are rejected while they stream in |
 | `POST /api/sample` | Analyse the bundled sample corpus |
 | `POST /api/render?format=md\|yaml` | Render a report the client already has |
 | `GET /api/health` | Health check |
@@ -190,7 +193,9 @@ The suite checks the chunkers on inputs small enough to count by hand (for examp
 with overlap 1 gives exactly `a b c d`, `d e f g`, `g h i j`). It also checks extracted structure against the content
 written into the sample corpus: 8 headings, 2 tables with 5 and 7 rows and 8 list items in the manual PDF, and a single
 page with no text layer in the scanned invoice. Other tests cover the rule thresholds, the index-size arithmetic,
-determinism, the API (including path traversal in uploads) and the CLI.
+determinism, code chunking, scan detection, encodings, translations (every message exists in both languages with
+the same parameters), the API (path traversal, conflicting paths, body limits, a slow analysis not blocking
+`/api/health`) and the CLI.
 
 ## Sample corpus
 
@@ -212,6 +217,7 @@ ragcompass/
 │   ├── chunking.py      # fixed, recursive, heading, page, row
 │   ├── simulate.py      # strategy x size x overlap grid and metrics
 │   ├── rules.py         # deterministic rule engine and thresholds
+│   ├── messages.py      # reason templates and labels in English and Spanish
 │   ├── analyze.py       # pipeline entry point
 │   ├── report.py        # terminal, JSON, Markdown, YAML renderers
 │   ├── cli.py           # Typer CLI

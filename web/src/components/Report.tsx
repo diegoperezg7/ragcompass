@@ -84,8 +84,14 @@ function useFormatValue() {
   };
 }
 
+function useReason() {
+  const lang = useStore((s) => s.lang);
+  return (rec: Recommendation) => rec.reason_i18n?.[lang] ?? rec.reason;
+}
+
 function Recommendations({ report }: { report: ReportData }) {
   const t = useT();
+  const reason = useReason();
   const format = useFormatValue();
   const sections: Record<string, Recommendation[]> = {};
   const sectionOf: Record<string, string> = { vectors: "embedding", metadata: "retrieval" };
@@ -97,9 +103,7 @@ function Recommendations({ report }: { report: ReportData }) {
     <section className="block">
       <div className="block-head">
         <h2>{t.recommendations}</h2>
-        <p className="muted">
-          {t.recommendationsHint} {t.reasonsNote}
-        </p>
+        <p className="muted">{t.recommendationsHint}</p>
       </div>
       {Object.entries(sections).map(([section, recs]) => (
         <div key={section} className="rec-section">
@@ -113,7 +117,7 @@ function Recommendations({ report }: { report: ReportData }) {
                 <div key={rec.key} className="parser-row">
                   <span className="kind">{rec.key.slice(7)}</span>
                   <strong>{String(rec.value)}</strong>
-                  <span className="muted">{rec.reason}</span>
+                  <span className="muted">{reason(rec)}</span>
                 </div>
               ))}
             </div>
@@ -123,7 +127,7 @@ function Recommendations({ report }: { report: ReportData }) {
               <article key={rec.key} className="card rec">
                 <div className="rec-label">{keyLabel(t, rec.key)}</div>
                 <div className="rec-value">{format(rec)}</div>
-                <p className="rec-reason">{rec.reason}</p>
+                <p className="rec-reason">{reason(rec)}</p>
               </article>
             ))}
           </div>
@@ -339,12 +343,12 @@ function IndexAndCost({ report }: { report: ReportData }) {
   );
 }
 
-async function download(report: ReportData, format: "yaml" | "json" | "md") {
+async function download(report: ReportData, format: "yaml" | "json" | "md", lang: string) {
   let body: string;
   if (format === "json") {
     body = JSON.stringify(report, null, 2);
   } else {
-    const response = await fetch(`/api/render?format=${format}`, {
+    const response = await fetch(`/api/render?format=${format}&lang=${lang}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(report),
@@ -361,6 +365,7 @@ async function download(report: ReportData, format: "yaml" | "json" | "md") {
 export function Report({ report }: { report: ReportData }) {
   const t = useT();
   const reset = useStore((s) => s.reset);
+  const lang = useStore((s) => s.lang);
   const s = report.summary;
   const vectors = report.recommendations.find((r) => r.key === "vectors")?.value as number;
   const stats = [
@@ -380,7 +385,7 @@ export function Report({ report }: { report: ReportData }) {
         </div>
         <div className="actions">
           {(["yaml", "json", "md"] as const).map((format) => (
-            <button key={format} className="button" onClick={() => download(report, format)}>
+            <button key={format} className="button" onClick={() => download(report, format, lang)}>
               <Download size={15} />
               {format === "yaml" ? "ragcompass.yaml" : format.toUpperCase()}
             </button>
