@@ -181,6 +181,27 @@ def serve(
 
 
 @app.command()
+def mcp(
+    transport: Annotated[str, typer.Option(help="stdio or http (Streamable HTTP, stateless).")] = "stdio",
+    host: str = "127.0.0.1",
+    port: int = 8461,
+    root: Annotated[
+        list[Path] | None, typer.Option(help="Folder the tools may read; repeat for several. Default: cwd.")
+    ] = None,
+) -> None:
+    """Run the MCP server (tools: analyze_corpus, recommend_config, run_benchmark, export_config)."""
+    from ragcompass.mcp_server import serve as serve_mcp
+
+    if transport not in ("stdio", "http"):
+        raise typer.BadParameter("choose stdio or http", param_hint="--transport")
+    serve_mcp(transport, host, port, root)
+
+
+@app.command()
 def version() -> None:
     """Print the version."""
     typer.echo(__version__)
+
+
+if __name__ == "__main__":
+    app()
