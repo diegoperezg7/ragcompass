@@ -5,7 +5,7 @@ const PY_KEYWORDS = new Set(
 );
 
 const PYTHON = /(#[^\n]*)|("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')|\b(\d+(?:\.\d+)?)\b|\b([A-Za-z_]\w*)(?=\s*\()|\b([A-Za-z_]\w*)\b/g;
-const YAML = /(#[^\n]*)|^(\s*-?\s*)([\w.-]+)(?=:)|("(?:\\.|[^"\\\n])*"|'[^'\n]*')|\b(true|false|null)\b|(?<![\w.])(-?\d+(?:\.\d+)?)\b/gm;
+const YAML = /(#[^\n]*)|^(\s*-?\s*)([\w.-]+)(?=:)|("(?:\\.|[^"\\\n])*"|'[^'\n]*')|\b(true|false|null)\b|(?<=:\s+|-\s+)(-?\d+(?:\.\d+)?)(?=\s*(?:#|$))/gm;
 
 /** Small tokenizer for the two languages the export shows; enough for readable coloring. */
 export function highlight(code: string, language: "python" | "yaml"): { kind: TokenKind; text: string }[] {

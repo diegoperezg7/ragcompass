@@ -73,8 +73,8 @@ function RecallCurve({ configs, winner, colorOf }: { configs: BenchConfig[]; win
             </text>
           </g>
         ))}
-        {ks.map((k) => (
-          <text key={k} x={x(k)} y={h - 8} textAnchor="middle" className="axis-text">
+        {ks.map((k, i) => (
+          <text key={k} x={x(k)} y={h - 8} textAnchor={i === 0 ? "start" : i === ks.length - 1 ? "end" : "middle"} className="axis-text">
             k={k}
           </text>
         ))}
@@ -175,8 +175,7 @@ function QueryQuality({ bench }: { bench: Bench }) {
           </span>
         </div>
       )}
-      {/* The server may already warn about synthetic queries; say it once. */}
-      {bench.mode !== "file" && !bench.warnings.some((w) => w.includes("--queries")) && <p className="quality-note muted">{t.syntheticNote}</p>}
+      {bench.mode !== "file" && <p className="quality-note muted">{t.syntheticNote}</p>}
     </div>
   );
 }
@@ -192,6 +191,9 @@ function Results({ bench }: { bench: Bench }) {
   const colorOf = (c: BenchConfig) => `var(--series-${order.indexOf(c.label) + 1})`;
   const decision = bench.decisions.find((d) => d.key.startsWith("chunking.")) ?? bench.decisions[0];
   const margin = bench.winner.margin;
+  // The synthetic-queries warning is shown, translated, next to the query quality.
+  const warnings = bench.mode === "file" ? bench.warnings : bench.warnings.filter((w) => !w.includes("--queries"));
+  const n3 = (v: number) => v.toLocaleString(lang, { minimumFractionDigits: 3, maximumFractionDigits: 3 });
   return (
     <>
       <div className="winner-card">
@@ -209,9 +211,9 @@ function Results({ bench }: { bench: Bench }) {
                 {decision ? " " : ""}
                 {t.marginText
                   .replace("{metric}", metricName(bench.primary_metric, bench.k))
-                  .replace("{mean}", `+${margin.mean.toFixed(3)}`)
-                  .replace("{lo}", margin.ci[0].toFixed(3))
-                  .replace("{hi}", margin.ci[1].toFixed(3))
+                  .replace("{mean}", `+${n3(margin.mean)}`)
+                  .replace("{lo}", n3(margin.ci[0]))
+                  .replace("{hi}", n3(margin.ci[1]))
                   .replace("{other}", bench.winner.runner_up)}
               </>
             )}
@@ -222,9 +224,9 @@ function Results({ bench }: { bench: Bench }) {
         </div>
       </div>
       <QueryQuality bench={bench} />
-      {bench.warnings.length > 0 && (
+      {warnings.length > 0 && (
         <p className="inline-warn">
-          <TriangleAlert size={14} aria-hidden /> {bench.warnings.join(" ")}
+          <TriangleAlert size={14} aria-hidden /> {warnings.join(" ")}
         </p>
       )}
       <div className="bench-toolbar">

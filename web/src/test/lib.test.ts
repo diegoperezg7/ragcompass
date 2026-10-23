@@ -74,4 +74,9 @@ describe("highlight", () => {
     expect(tokens).toContainEqual({ kind: "number", text: "256" });
     expect(tokens).toContainEqual({ kind: "keyword", text: "true" });
   });
+
+  it("leaves numbers inside plain scalars alone", () => {
+    const tokens = highlight("generator: ragcompass 0.1.0\n", "yaml");
+    expect(tokens.some((t) => t.kind === "number")).toBe(false);
+  });
 });

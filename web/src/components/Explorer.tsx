@@ -16,6 +16,7 @@ const STRATEGIES: Record<string, string[]> = {
 };
 const NO_OVERLAP = new Set(["heading", "page", "row"]);
 const DEBOUNCE_MS = 250;
+const CUT_ISSUE: Record<string, string> = { sentence: "sentence_cut", table_row: "table_cut", code: "code_cut" };
 
 interface Config {
   strategy: string;
@@ -76,6 +77,7 @@ function ChunkBlock({ view, chunk, previousEnd, selected, onSelect }: { view: Ch
   const t = useT();
   const overlapEnd = Math.min(chunk.end, Math.max(chunk.start, previousEnd));
   const cut = chunk.boundaries.end !== "clean";
+  const cutIssue = chunk.issues.find((i) => i.kind === CUT_ISSUE[chunk.boundaries.end]);
   return (
     <div
       className={`chunk${selected ? " selected" : ""}${damaged(chunk) ? " bad" : ""}`}
@@ -106,7 +108,7 @@ function ChunkBlock({ view, chunk, previousEnd, selected, onSelect }: { view: Ch
         <div className="cut-mark">
           <Scissors size={12} aria-hidden />
           {t.boundaries[chunk.boundaries.end]}
-          {chunk.issues.find((i) => i.kind !== "tiny" && i.detail) && <span className="cut-detail">{chunk.issues.find((i) => i.kind !== "tiny")?.detail}</span>}
+          {cutIssue?.detail && <span className="cut-detail">{cutIssue.detail}</span>}
         </div>
       )}
     </div>
@@ -148,7 +150,10 @@ function Pane({
   const go = (index: number) => {
     const i = Math.max(0, Math.min(chunks.length - 1, index));
     setCurrent(i);
-    textRef.current?.querySelector(`[data-index="${chunks[i]?.index}"]`)?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+    // Scroll the list only: scrollIntoView would also move the page under the sticky controls.
+    const list = textRef.current;
+    const target = list?.querySelector<HTMLElement>(`[data-index="${chunks[i]?.index}"]`);
+    if (list && target) list.scrollTo?.({ top: target.offsetTop - 12, behavior: "smooth" });
   };
   const nextIssue = (direction: 1 | -1) => {
     for (let step = 1; step <= chunks.length; step++) {
@@ -181,6 +186,7 @@ function Pane({
             ),
           }))}
         />
+        <div className="pane-sliders">
         <label className="slider">
           <span>
             {t.size} <strong className="tabular">{config.size}</strong>
@@ -208,6 +214,7 @@ function Pane({
           </button>
         )}
         {isRecommended && <span className="badge accent">{t.recommended}</span>}
+        </div>
       </div>
       {error ? (
         <div className="alert" role="alert">

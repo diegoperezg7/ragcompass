@@ -9,7 +9,7 @@
   --text: #15141c;
   --text-2: #3d3b4a;
   --muted: #646273;
-  --faint: #8d8b9a;
+  --faint: #706e7d;
   --accent: #4c3bcf;
   --accent-hover: #3f2fb8;
   --accent-soft: #efedfc;
@@ -19,7 +19,7 @@
   --ok-soft: #e8f6ee;
   --warn: #b45309;
   --warn-soft: #fdf3e3;
-  --error: #d42c2c;
+  --error: #c22424;
   --error-soft: #fdecec;
   --heat: #e05a1f;
   /* Categorical slots, validated for color-vision deficiency in this order. */
@@ -54,7 +54,7 @@
   --text: #f2f1f7;
   --text-2: #cfcdda;
   --muted: #9b99aa;
-  --faint: #6f6d7e;
+  --faint: #85839a;
   --accent: #8b7cf6;
   --accent-hover: #a397f8;
   --accent-soft: #1b1735;
@@ -1257,8 +1257,11 @@ kbd {
 }
 
 /* ---------- Charts (shared) ---------- */
-.chart {
+.chart,
+.treemap-wrap,
+.scatter-wrap {
   min-width: 0;
+  overflow: hidden;
 }
 
 .chart svg,
@@ -1542,6 +1545,7 @@ kbd {
 
 .rec-grid {
   display: grid;
+  align-items: start;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   gap: 10px;
 }
@@ -1762,7 +1766,14 @@ kbd {
   gap: 24px;
 }
 
+.chunking-heat {
+  min-width: 0;
+  overflow-x: auto;
+}
+
 .heatmap {
+  min-width: 380px;
+  padding: 4px;
   display: grid;
   grid-auto-rows: auto;
   align-items: center;
@@ -1821,7 +1832,7 @@ kbd {
 }
 
 .hm-cell.dark {
-  color: #ffffff;
+  color: #15141c;
 }
 
 .hm-cell:hover {
@@ -2200,7 +2211,7 @@ td.num {
 }
 
 .point.faded {
-  opacity: 0.35;
+  opacity: 0.55;
 }
 
 .point.near {
@@ -2302,6 +2313,7 @@ td.num {
 
 .cost-table th {
   padding: 0 0 6px;
+  white-space: nowrap;
   color: var(--muted);
   font-size: 11.5px;
   font-weight: 600;
@@ -2457,8 +2469,12 @@ table {
 }
 
 .explorer-bar .field {
-  flex: 1 1 320px;
+  flex: 1 1 260px;
   max-width: 560px;
+}
+
+.explorer-bar .select {
+  width: 100%;
 }
 
 .panes {
@@ -2489,6 +2505,21 @@ table {
   padding: 12px 14px;
   border-bottom: 1px solid var(--border);
   background: var(--surface-raised);
+}
+
+.pane-sliders {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 18px;
+}
+
+.panes.split .pane-sliders {
+  flex: 1 1 100%;
+}
+
+.panes.split .slider {
+  flex: 1 1 140px;
 }
 
 .pane-label {
@@ -2619,7 +2650,9 @@ input[type="range"]:disabled {
 }
 
 .chunk-list {
+  position: relative;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   align-content: start;
   gap: 8px;
   max-height: calc(100vh - 290px);
@@ -2640,6 +2673,7 @@ input[type="range"]:disabled {
 }
 
 .chunk {
+  min-width: 0;
   /* Off-screen chunks skip layout and paint: long documents stay fast without a windowing library. */
   content-visibility: auto;
   contain-intrinsic-size: auto 160px;
@@ -3047,7 +3081,7 @@ pre.code {
   }
 
   .hbar {
-    grid-template-columns: 96px minmax(0, 1fr) 48px;
+    grid-template-columns: 128px minmax(0, 1fr) 48px;
   }
 
   .chunk-list {
@@ -3056,5 +3090,19 @@ pre.code {
 
   .slider {
     flex: 1 1 140px;
+  }
+
+  .dialog-tabs {
+    padding: 0 10px;
+  }
+
+  .dialog-tabs button {
+    padding: 0 9px;
+  }
+
+  .dialog-head,
+  .code-panel {
+    padding-left: 14px;
+    padding-right: 14px;
   }
 }

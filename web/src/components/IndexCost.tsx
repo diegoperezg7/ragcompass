@@ -55,7 +55,7 @@ export function IndexCost({ report }: { report: Report }) {
         <div>
           <div className="calc-big tabular">{bytes(total)}</div>
           <div className="muted tabular">
-            {num(n)} {t.vectorsLower} · {bytes(raw)} {t.rawLower} + {bytes(graph)} HNSW
+            {num(n)} {t.vectorsLower} · {bytes(raw)} {t.rawLower} + {bytes(graph)} HNSW · {num(tokens)} {t.tokensLower}
           </div>
         </div>
         {Math.abs(delta) > 0.001 && (
@@ -74,8 +74,8 @@ export function IndexCost({ report }: { report: Report }) {
           <tr>
             <th>{t.model}</th>
             <th className="num">{t.perMillion}</th>
-            <th className="num">
-              {t.cost} ({num(tokens)} tok)
+            <th className="num" title={`${num(tokens)} tokens`}>
+              {t.cost}
             </th>
           </tr>
         </thead>

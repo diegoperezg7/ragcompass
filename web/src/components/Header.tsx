@@ -32,11 +32,11 @@ export function Header() {
               {report.summary.root}
             </span>
             <nav className="tabs" aria-label={t.views}>
-              <button aria-current={view === "report" ? "page" : undefined} onClick={() => setView("report")}>
+              <button aria-current={view === "report" ? "page" : undefined} onClick={() => setView("report")} aria-label={t.report}>
                 <LayoutDashboard size={15} aria-hidden />
                 <span>{t.report}</span>
               </button>
-              <button aria-current={view === "explorer" ? "page" : undefined} onClick={() => setView("explorer")}>
+              <button aria-current={view === "explorer" ? "page" : undefined} onClick={() => setView("explorer")} aria-label={t.explorer}>
                 <ScanSearch size={15} aria-hidden />
                 <span>{t.explorer}</span>
               </button>
@@ -47,7 +47,7 @@ export function Header() {
       <div className="header-actions">
         {report && (
           <>
-            <button className="button sm" onClick={() => setExportOpen(true)}>
+            <button className="button sm" onClick={() => setExportOpen(true)} aria-label={t.export}>
               <Code2 size={15} aria-hidden />
               <span className="hide-sm">{t.export}</span>
             </button>
