@@ -121,13 +121,13 @@ def test_analysis_does_not_block_health(monkeypatch):
 
     import ragcompass.api as api
 
-    real = api.analyze
+    real = api.run_analysis
 
     def slow_analyze(*args, **kwargs):
         time.sleep(0.6)
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(api, "analyze", slow_analyze)
+    monkeypatch.setattr(api, "run_analysis", slow_analyze)
 
     async def scenario():
         transport = httpx.ASGITransport(app=api.app)
@@ -167,3 +167,37 @@ def test_api_lang_parameter():
     assert parser["reason"] == parser["reason_i18n"]["es"]
     rendered = client.post("/api/render?format=md&lang=en", json=report).text
     assert "## Recommendations" in rendered
+
+
+def test_report_id_and_chunk_explorer():
+    report = client.post("/api/sample").json()
+    report_id = report["id"]
+    assert client.get(f"/api/report/{report_id}").json()["summary"] == report["summary"]
+
+    view = client.get(f"/api/report/{report_id}/chunks", params={"file": "onboarding-handbook.md"}).json()
+    assert view["recommended"] is True
+    assert view["strategy"] == view["applied_strategy"] == "heading"
+    # chunks tile the text in order and their offsets point into it
+    assert [c["index"] for c in view["chunks"]] == list(range(len(view["chunks"])))
+    assert all(0 <= c["start"] < c["end"] <= len(view["text"]) for c in view["chunks"])
+    assert view["metrics"]["chunks"] == len(view["chunks"])
+
+    fixed = client.get(
+        f"/api/report/{report_id}/chunks",
+        params={"file": "hx200-maintenance-manual.pdf", "strategy": "fixed", "size": 128, "overlap": 0},
+    ).json()
+    kinds = {issue["kind"] for c in fixed["chunks"] for issue in c["issues"]}
+    assert "sentence_cut" in kinds
+    assert fixed["recommended"] is False
+
+
+def test_chunk_explorer_errors():
+    report_id = client.post("/api/sample").json()["id"]
+    url = f"/api/report/{report_id}/chunks"
+    assert client.get("/api/report/nope/chunks", params={"file": "x"}).status_code == 404
+    assert client.get(url, params={"file": "missing.md"}).status_code == 422
+    assert client.get(url, params={"file": "wiring-diagram.png"}).status_code == 422  # no text
+    assert client.get(url, params={"file": "product-catalog.csv", "strategy": "heading"}).status_code == 422
+    assert client.get(url, params={"file": "onboarding-handbook.md", "size": 4}).status_code == 422
+    params = {"file": "onboarding-handbook.md", "strategy": "fixed", "size": 64, "overlap": 64}
+    assert client.get(url, params=params).status_code == 422

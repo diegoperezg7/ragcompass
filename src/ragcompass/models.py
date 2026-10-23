@@ -79,6 +79,11 @@ class SizeStats(BaseModel):
     mean: float = 0.0
 
 
+class Histogram(BaseModel):
+    edges: list[int]  # bin edges in tokens; the last bin also holds anything above the last edge
+    counts: list[int]  # len(edges) - 1 values
+
+
 class SimulationResult(BaseModel):
     group: str
     strategy: str
@@ -94,6 +99,7 @@ class SimulationResult(BaseModel):
     code_cut_pct: float  # chunks with a boundary inside a function, block or statement
     tiny_pct: float  # chunks below a quarter of the target size
     damage: float  # sentence + 3 * table + orphan heading + code cuts + tiny, all in %
+    histogram: Histogram = Field(default_factory=lambda: Histogram(edges=[], counts=[]))
 
 
 class ReasonPart(BaseModel):
@@ -108,6 +114,7 @@ class Recommendation(BaseModel):
     reason_i18n: dict[str, str] = Field(default_factory=dict)  # rendered in every language
     reason_parts: list[ReasonPart] = Field(default_factory=list)
     evidence: dict[str, Any] = Field(default_factory=dict)
+    basis: str = "rule-based"  # "measured" once a benchmark has confirmed or replaced the value
 
 
 class IndexEstimate(BaseModel):
@@ -140,6 +147,7 @@ class Report(BaseModel):
     generator: str = "ragcompass"  # first key of the JSON output; marks it as ours when re-scanned
     version: str
     lang: str = "en"
+    id: str | None = None  # set when the API keeps the analysis for the chunk explorer
     summary: CorpusSummary
     documents: list[DocProfile]
     simulations: list[SimulationResult]
@@ -148,3 +156,45 @@ class Report(BaseModel):
     costs: list[EmbeddingCost]
     config: dict[str, Any]
     llm_summary: str | None = None
+    bench: dict[str, Any] | None = None  # BenchResult once a benchmark has run
+
+
+class BlockView(BaseModel):
+    type: BlockType
+    start: int
+    end: int
+    level: int = 0
+    page: int | None = None
+
+
+class Issue(BaseModel):
+    kind: str  # sentence_cut, table_cut, orphan_heading, code_cut or tiny
+    detail: str | None = None
+
+
+class ChunkView(BaseModel):
+    index: int
+    start: int
+    end: int
+    tokens: int  # extra_tokens included
+    extra_tokens: int = 0  # e.g. a table header repeated on top of the span
+    issues: list[Issue]
+    boundaries: dict[str, str]  # {"start": kind, "end": kind}; kind is clean, sentence, table_row or code
+
+
+class ChunkExplorer(BaseModel):
+    report_id: str
+    file: str
+    kind: DocKind
+    group: str
+    strategy: str  # requested strategy
+    applied_strategy: str  # what actually ran: falls back to recursive without the structure
+    size: int
+    overlap: int
+    recommended: bool  # strategy, size and overlap equal the recommendation for this group
+    strategies: list[str]  # strategies that make sense for this group
+    offsets: str = "utf-16"  # start/end are UTF-16 code units, the unit of JavaScript strings
+    text: str
+    blocks: list[BlockView]
+    chunks: list[ChunkView]
+    metrics: SimulationResult  # the simulation metrics for this file alone

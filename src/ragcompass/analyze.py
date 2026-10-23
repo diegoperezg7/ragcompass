@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 
 from ragcompass import __version__
@@ -15,7 +16,19 @@ from ragcompass.simulate import Doc, simulate
 from ragcompass.tokens import Tokenizer, get_tokenizer
 
 
+@dataclass
+class Analysis:
+    """A report plus the parsed documents behind it, keyed by relative path."""
+
+    report: Report
+    docs: dict[str, Doc]
+
+
 def analyze(path: str | Path, tokenizer: Tokenizer | None = None, label: str | None = None) -> Report:
+    return run_analysis(path, tokenizer, label).report
+
+
+def run_analysis(path: str | Path, tokenizer: Tokenizer | None = None, label: str | None = None) -> Analysis:
     root = Path(path)
     if not root.exists():
         raise FileNotFoundError(f"{root} does not exist")
@@ -30,7 +43,7 @@ def analyze(path: str | Path, tokenizer: Tokenizer | None = None, label: str | N
         relative = file.relative_to(base).as_posix()
         profiles.append(build_profile(relative, file.stat().st_size, extracted, layout))
         if not extracted.error:
-            docs.append(Doc(kind=extracted.kind, layout=layout))
+            docs.append(Doc(kind=extracted.kind, layout=layout, path=relative))
 
     simulations = simulate(docs)
     plan = recommend(profiles, docs, simulations)
@@ -52,7 +65,7 @@ def analyze(path: str | Path, tokenizer: Tokenizer | None = None, label: str | N
         "corpus": {"root": summary.root, "files": summary.analysed, "tokens": summary.tokens},
         **plan.config,
     }
-    return Report(
+    report = Report(
         version=__version__,
         summary=summary,
         documents=profiles,
@@ -62,3 +75,4 @@ def analyze(path: str | Path, tokenizer: Tokenizer | None = None, label: str | N
         costs=plan.costs,
         config=config,
     )
+    return Analysis(report=report, docs={doc.path: doc for doc in docs})

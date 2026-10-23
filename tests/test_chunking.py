@@ -159,3 +159,20 @@ def test_fixed_windows_cut_code(layout):
     )
     assert fixed.code_cut_pct > 50
     assert split.code_cut_pct == 0
+
+
+def test_histogram_bins():
+    from ragcompass.simulate import histogram
+
+    result = histogram([10, 120, 250, 256, 300], 256)
+    assert result.edges[0] == 0 and result.edges[-1] == 256 and len(result.edges) == 11
+    assert sum(result.counts) == 5
+    assert result.counts[0] == 1  # 10
+    assert result.counts[-1] == 3  # 250, 256 and the oversized 300
+
+
+def test_utf16_offsets():
+    from ragcompass.explorer import utf16_offsets
+
+    to16 = utf16_offsets("a\U0001f600b")  # an astral character takes two UTF-16 units
+    assert [to16(i) for i in range(4)] == [0, 1, 3, 4]

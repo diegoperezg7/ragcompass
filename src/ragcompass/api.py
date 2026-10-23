@@ -13,9 +13,11 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from ragcompass import __version__
-from ragcompass.analyze import analyze
-from ragcompass.models import Report
+from ragcompass.analyze import run_analysis
+from ragcompass.explorer import ExplorerError, explore
+from ragcompass.models import ChunkExplorer, Report
 from ragcompass.report import localize, to_markdown, to_yaml
+from ragcompass.store import AnalysisStore
 
 MAX_UPLOAD_BYTES = int(os.environ.get("RAGCOMPASS_MAX_UPLOAD_MB", "50")) * 1024 * 1024
 MAX_FILES = 500
@@ -78,6 +80,7 @@ class BodyLimit:
 
 
 app = FastAPI(title="ragcompass", version=__version__)
+store = AnalysisStore()
 app.add_middleware(BodyLimit, limit=MAX_UPLOAD_BYTES + MULTIPART_OVERHEAD)
 
 
@@ -130,7 +133,9 @@ async def analyze_upload(
         source = entries[0] if len(entries) == 1 and entries[0].is_dir() else root
         label = source.name if source != root else "upload"
         # Parsing and chunking are CPU-bound; keep the event loop free for other requests.
-        report = await run_in_threadpool(analyze, source, None, label)
+        analysis = await run_in_threadpool(run_analysis, source, None, label)
+        store.put(analysis)
+        report = analysis.report
     return await run_in_threadpool(respond, report, format, llm_summary, lang)
 
 
@@ -143,7 +148,40 @@ def analyze_sample(
     """Analyse the bundled sample corpus."""
     if not SAMPLE_DIR.is_dir():
         raise HTTPException(404, "sample corpus not available")
-    return respond(analyze(SAMPLE_DIR, label="sample-corpus"), format, llm_summary, lang)
+    analysis = run_analysis(SAMPLE_DIR, label="sample-corpus")
+    store.put(analysis)
+    return respond(analysis.report, format, llm_summary, lang)
+
+
+def entry_or_404(report_id: str):
+    entry = store.get(report_id)
+    if entry is None:
+        raise HTTPException(404, "unknown or expired report id; analyse the files again")
+    return entry
+
+
+@app.get("/api/report/{report_id}", response_model=None)
+def get_report(
+    report_id: str, format: Annotated[Format, Query()] = "json", lang: Annotated[Lang, Query()] = "en"
+) -> Report | PlainTextResponse:
+    """A report kept from a previous analysis."""
+    return respond(entry_or_404(report_id).analysis.report.model_copy(deep=True), format, False, lang)
+
+
+@app.get("/api/report/{report_id}/chunks")
+def get_chunks(
+    report_id: str,
+    file: Annotated[str, Query(description="Relative path, as in report.documents[].path")],
+    strategy: Annotated[str | None, Query()] = None,
+    size: Annotated[int | None, Query()] = None,
+    overlap: Annotated[int | None, Query()] = None,
+) -> ChunkExplorer:
+    """Text of one file with the span, size and issues of every chunk under a strategy."""
+    entry = entry_or_404(report_id)
+    try:
+        return explore(entry.analysis, report_id, file, strategy, size, overlap)
+    except ExplorerError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.post("/api/render")
