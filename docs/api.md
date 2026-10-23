@@ -231,7 +231,7 @@ is not installed.
 |---|---|---|
 | `group` | `documents` if present, else the largest group | `documents`, `tables` or `code` |
 | `strategy`, `size`, `overlap` | recommended for the group | as in the chunk explorer |
-| `queries` | `true` | project the benchmark queries too (generated with `seed`) |
+| `queries` | `true` | project the benchmark queries too (drawn with `seed`) |
 | `seed` | `13` | |
 
 ```jsonc

@@ -3,7 +3,7 @@ Output docs/assets/cli.gif
 Set Shell zsh
 Set FontSize 15
 Set Width 1480
-Set Height 940
+Set Height 1000
 Set Padding 24
 Set Theme "Catppuccin Mocha"
 Set TypingSpeed 45ms
@@ -18,7 +18,7 @@ Sleep 400ms
 Enter
 Sleep 9s
 
-Type "clear && ragcompass analyze corpus -o ragcompass.yaml > /dev/null && sed -n '/^chunking/,$p' ragcompass.yaml"
+Type "clear && ragcompass bench corpus 2>/dev/null"
 Sleep 400ms
 Enter
-Sleep 7s
+Sleep 10s

@@ -240,6 +240,18 @@ def get_projection(
         raise HTTPException(422, str(exc)) from exc
 
 
+@app.get("/api/report/{report_id}/export")
+def get_export(
+    report_id: str, target: Annotated[Literal["yaml", "langchain", "llamaindex", "haystack"], Query()]
+) -> PlainTextResponse:
+    """Ready-to-paste configuration: ragcompass.yaml or a Python snippet for a framework."""
+    from ragcompass.exporters import FILENAMES, export
+
+    text = export(entry_or_404(report_id).analysis.report, target)
+    headers = {"Content-Disposition": f'attachment; filename="{FILENAMES[target]}"'}
+    return PlainTextResponse(text, media_type="text/plain; charset=utf-8", headers=headers)
+
+
 def _localized_bench(bench: dict, lang: str) -> dict:
     bench = {**bench, "decisions": [dict(d) for d in bench["decisions"]]}
     for decision in bench["decisions"]:

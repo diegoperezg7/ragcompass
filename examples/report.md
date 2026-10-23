@@ -5,28 +5,29 @@
 
 ## Recommendations
 
-| Setting | Value | Why |
-|---|---|---|
-| parser.html | BeautifulSoup with nav, footer and scripts stripped | 1 file with 6 headings and 0 tables; the parser preserves both. |
-| parser.pdf_text | pymupdf text layer | 3 pages with a usable text layer (avg 1701 chars/page); no OCR needed. |
-| parser.markdown | markdown parser keeping heading hierarchy | 1 file with 6 headings and 1 table; the parser preserves both. |
-| parser.docx | python-docx (heading styles, tables in body order) | 1 file with 5 headings and 1 table; the parser preserves both. |
-| parser.csv | row serializer (header + row per record) | 40 data rows; serializing each row with its header keeps values attached to column names. |
-| parser.pdf_scanned | OCR (Tesseract via OCRmyPDF) | 1 of 1 page has no usable text layer under a page-wide image: scans need OCR before chunking. |
-| parser.code | language-aware splitter on class/function boundaries | 1 source file; splitting on definitions keeps functions whole. |
-| parser.xlsx | openpyxl row serializer, one table per sheet | 14 data rows; serializing each row with its header keeps values attached to column names. |
-| parser.image | vision-language model captions (e.g. qwen2.5-vl via Ollama) | 1 image with no text layer; a VLM caption or OCR is the only way to index them. |
-| chunking.documents | strategy heading, size 256, overlap 0 | 100% of the text sits under headings and the median section is 75 tokens. At 256 tokens, heading has the lowest damage score (13.3: 0.0% sentence cuts, 0.0% table cuts, 0.0% orphan headings, 0.0% code cuts, 13.3% tiny chunks) against recursive 25.0, fixed 146.2. |
-| chunking.tables | strategy row, size 512, overlap 0 | The median row is 35 tokens, so 512 fits the header plus 8 rows. At 512 tokens, row has the lowest damage score (0.0: 0.0% sentence cuts, 0.0% table cuts, 0.0% orphan headings, 0.0% code cuts, 0.0% tiny chunks) against recursive 150.0, fixed 225.0. |
-| chunking.code | strategy recursive, size 512, overlap 0 | 512 tokens fits a typical function with its signature and docstring. At 512 tokens, recursive has the lowest damage score (0.0: 0.0% sentence cuts, 0.0% table cuts, 0.0% orphan headings, 0.0% code cuts, 0.0% tiny chunks) against fixed 0.0. |
-| vectors | 30 | 21 chunks measured by the simulation. Plus 5 image captions of ~100 tokens each. Plus ~4 estimated for 1 scanned page at 800 tokens per page after OCR. |
-| embedding.dimension | 1024 | The text is not English-only (en 81%, es 19%); multilingual models at 1024 dims handle it. |
-| embedding.quantization | float32 | The float32 index at 1024 dims is 123.8 KiB, well under 1 GiB; quantization would trade recall for memory you do not need to save. |
-| embedding.cost | $0.0008 max | 5956 tokens to embed (overlap, repeated headers and image captions included); local models cost nothing, the largest hosted model costs $0.0008 per full index. |
-| retrieval.hybrid_bm25 | yes | 21.4 codes and 80.0 identifiers per 1k tokens: exact tokens like SKUs and dates are matched far better by BM25 than by dense vectors. |
-| retrieval.top_k | candidates 5, final 5 | A 3000-token context budget over chunks of up to 512 tokens fits 5. |
-| retrieval.reranker | no | 30 vectors is below 10,000: a top-5 from the index is precise enough, and a reranker would add one model call per candidate. Add one if evaluation shows misses. |
-| metadata | source, chunk_index, page, heading_path, sheet, row_range, language, dates, doc_kind | source: every chunk must cite its file. chunk_index: lets you expand to neighbouring chunks. page: citations point to a page. heading_path: headings give the chunk its context and a filter. sheet: keep which sheet a row came from. row_range: cite the exact rows. language: mixed languages, filter or route by language. dates: 9.1 dates per 1k tokens, extract them for time filters. doc_kind: mixed formats, filter tables, prose and captions separately. |
+| Setting | Value | Basis | Why |
+|---|---|---|---|
+| parser.html | BeautifulSoup with nav, footer and scripts stripped | rule-based | 1 file with 6 headings and 0 tables; the parser preserves both. |
+| parser.pdf_text | pymupdf text layer | rule-based | 3 pages with a usable text layer (avg 1701 chars/page); no OCR needed. |
+| parser.markdown | markdown parser keeping heading hierarchy | rule-based | 1 file with 6 headings and 1 table; the parser preserves both. |
+| parser.docx | python-docx (heading styles, tables in body order) | rule-based | 1 file with 5 headings and 1 table; the parser preserves both. |
+| parser.csv | row serializer (header + row per record) | rule-based | 40 data rows; serializing each row with its header keeps values attached to column names. |
+| parser.pdf_scanned | OCR (Tesseract via OCRmyPDF) | rule-based | 1 of 1 page has no usable text layer under a page-wide image: scans need OCR before chunking. |
+| parser.code | language-aware splitter on class/function boundaries | rule-based | 1 source file; splitting on definitions keeps functions whole. |
+| parser.xlsx | openpyxl row serializer, one table per sheet | rule-based | 14 data rows; serializing each row with its header keeps values attached to column names. |
+| parser.image | vision-language model captions (e.g. qwen2.5-vl via Ollama) | rule-based | 1 image with no text layer; a VLM caption or OCR is the only way to index them. |
+| chunking.documents | strategy heading, size 256, overlap 0 | rule-based | 100% of the text sits under headings and the median section is 75 tokens. At 256 tokens, heading has the lowest damage score (13.3: 0.0% sentence cuts, 0.0% table cuts, 0.0% orphan headings, 0.0% code cuts, 13.3% tiny chunks) against recursive 25.0, fixed 146.2. |
+| chunking.tables | strategy row, size 512, overlap 0 | rule-based | The median row is 35 tokens, so 512 fits the header plus 8 rows. At 512 tokens, row has the lowest damage score (0.0: 0.0% sentence cuts, 0.0% table cuts, 0.0% orphan headings, 0.0% code cuts, 0.0% tiny chunks) against recursive 150.0, fixed 225.0. |
+| chunking.code | strategy recursive, size 512, overlap 0 | rule-based | 512 tokens fits a typical function with its signature and docstring. At 512 tokens, recursive has the lowest damage score (0.0: 0.0% sentence cuts, 0.0% table cuts, 0.0% orphan headings, 0.0% code cuts, 0.0% tiny chunks) against fixed 0.0. |
+| vectors | 30 | rule-based | 21 chunks measured by the simulation. Plus 5 image captions of ~100 tokens each. Plus ~4 estimated for 1 scanned page at 800 tokens per page after OCR. |
+| embedding.dimension | 1024 | rule-based | The text is not English-only (en 81%, es 19%); multilingual models at 1024 dims handle it. |
+| embedding.quantization | float32 | rule-based | The float32 index at 1024 dims is 123.8 KiB, well under 1 GiB; quantization would trade recall for memory you do not need to save. |
+| embedding.cost | $0.0008 max | rule-based | 5956 tokens to embed (overlap, repeated headers and image captions included); local models cost nothing, the largest hosted model costs $0.0008 per full index. |
+| retrieval.retriever | hybrid | rule-based | Hybrid (BM25 fused with dense retrieval), because exact identifiers are common. |
+| retrieval.hybrid_bm25 | yes | rule-based | 21.4 codes and 80.0 identifiers per 1k tokens: exact tokens like SKUs and dates are matched far better by BM25 than by dense vectors. |
+| retrieval.top_k | candidates 5, final 5 | rule-based | A 3000-token context budget over chunks of up to 512 tokens fits 5. |
+| retrieval.reranker | no | rule-based | 30 vectors is below 10,000: a top-5 from the index is precise enough, and a reranker would add one model call per candidate. Add one if evaluation shows misses. |
+| metadata | source, chunk_index, page, heading_path, sheet, row_range, language, dates, doc_kind | rule-based | source: every chunk must cite its file. chunk_index: lets you expand to neighbouring chunks. page: citations point to a page. heading_path: headings give the chunk its context and a filter. sheet: keep which sheet a row came from. row_range: cite the exact rows. language: mixed languages, filter or route by language. dates: 9.1 dates per 1k tokens, extract them for time filters. doc_kind: mixed formats, filter tables, prose and captions separately. |
 
 ## Documents
 

@@ -8,4 +8,9 @@ services:
       RAGCOMPASS_MAX_UPLOAD_MB: "50"
       # Optional LLM summary (off unless a request asks for it):
       # OLLAMA_HOST: "http://host.docker.internal:11434"
+    volumes:
+      - models:/data/models # embedding models, downloaded on first benchmark
     restart: unless-stopped
+
+volumes:
+  models:

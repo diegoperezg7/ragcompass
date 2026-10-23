@@ -234,3 +234,17 @@ def test_cli_bench(tmp_path):
     assert result.exit_code == 0, result.output
     assert "## Retrieval benchmark" in result.stdout
     assert (tmp_path / "evals" / "evalsmith.yaml").exists()
+
+
+def test_export_endpoint_and_cli():
+    import ast
+
+    report_id = client.post("/api/sample").json()["id"]
+    response = client.get(f"/api/report/{report_id}/export", params={"target": "llamaindex"})
+    assert response.status_code == 200
+    assert "ragcompass_llamaindex.py" in response.headers["content-disposition"]
+    ast.parse(response.text)
+    assert client.get(f"/api/report/{report_id}/export", params={"target": "nope"}).status_code == 422
+    result = CliRunner().invoke(cli, ["export", str(CORPUS), "--target", "haystack"])
+    assert result.exit_code == 0, result.output
+    ast.parse(result.stdout)
